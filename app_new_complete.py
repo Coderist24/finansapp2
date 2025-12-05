@@ -5996,20 +5996,23 @@ def show_login_page():
         with main_left:
             st.subheader("👤 Mevcut Hesaba Giriş")
             
-            # Form dışında yarı genişlik için container
-            form_container, _ = st.columns([1, 1])
+            # CSS - sadece butonları 1/3 boyutuna indir
+            st.markdown("""
+            <style>
+            [data-testid="stForm"] button {
+                max-width: 33.33% !important;
+            }
+            </style>
+            """, unsafe_allow_html=True)
             
-            with form_container:
-                with st.form("login_form"):
-                    email = st.text_input("📧 Email:", key="login_email")
-                    password = st.text_input("🔒 Şifre:", type="password", key="login_password")
+            # Form - nested columns kaldırıldı (Azure uyumluluğu için)
+            with st.form("login_form"):
+                email = st.text_input("📧 Email:", key="login_email")
+                password = st.text_input("🔒 Şifre:", type="password", key="login_password")
 
-                    # Butonlar yan yana
-                    btn_col1, btn_col2 = st.columns([1, 1])
-                    with btn_col1:
-                        login_submitted = st.form_submit_button("🚀 Giriş Yap", type="primary", use_container_width=True)
-                    with btn_col2:
-                        forgot_password = st.form_submit_button("🔑 Şifremi Unuttum", use_container_width=True)
+                # Butonlar alt alta (nested columns Azure'da desteklenmiyor)
+                login_submitted = st.form_submit_button("🚀 Giriş Yap", type="primary", use_container_width=True)
+                forgot_password = st.form_submit_button("🔑 Şifremi Unuttum", use_container_width=True)
 
             if login_submitted:
                 if email and password:
@@ -6053,287 +6056,288 @@ def show_login_page():
     elif selected_tab == "📝 Kayıt Ol":
         st.subheader("🆕 Yeni Hesap Oluştur")
 
-        # Narrow and left-align registration inputs to match login form
-        left_col, right_col = st.columns([2, 3])
-        with left_col:
-            new_name = st.text_input("👤 Ad Soyad:", key="register_name")
-            st.caption("💡 Ad Soyad alanı isteğe bağlıdır (zorunlu değildir)")
+        # CSS - input label'ları beyaz yap ve email alanını 1/5 boyutuna indir
+        st.markdown("""
+        <style>
+        .stTextInput label, .stTextInput label p, .stTextInput label span {
+            color: #ffffff !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
+        # Kayıt formu - email alanı 1/5 genişlikte
+        email_col, _ = st.columns([1, 4])
+        with email_col:
             new_email = st.text_input("📧 Email:", key="register_email")
 
-            # ============ DÖKÜMANLAR ONAY SEKSİYONU (E-POSTA DOĞRULAMASINDAN ÖNCE) ============
-            st.markdown("---")
-            st.subheader("📋 Dökümanları Onayla")
-            st.info("Hizmetlerimizi kullanabilmek için aşağıdaki dökümanları okuyup onaylamanız gerekmektedir.")
+        # ============ DÖKÜMANLAR ONAY SEKSİYONU (E-POSTA DOĞRULAMASINDAN ÖNCE) ============
+        st.markdown("---")
+        st.subheader("📋 Dökümanları Onayla")
+        st.info("Hizmetlerimizi kullanabilmek için aşağıdaki dökümanları okuyup onaylamanız gerekmektedir.")
+        
+        # Session state'de onay durumlarını kontrol et
+        if 'doc_accepted_user_terms' not in st.session_state:
+            st.session_state['doc_accepted_user_terms'] = False
+        if 'doc_accepted_privacy' not in st.session_state:
+            st.session_state['doc_accepted_privacy'] = False
+        if 'doc_accepted_cookie' not in st.session_state:
+            st.session_state['doc_accepted_cookie'] = False
+        if 'show_user_terms_modal' not in st.session_state:
+            st.session_state['show_user_terms_modal'] = False
+        if 'show_privacy_modal' not in st.session_state:
+            st.session_state['show_privacy_modal'] = False
+        if 'show_cookie_modal' not in st.session_state:
+            st.session_state['show_cookie_modal'] = False
+        
+        # CSS - checkbox yazısı ve döküman metinlerini beyaz yap
+        st.markdown("""
+        <style>
+        .stCheckbox {
+            color: #ffffff !important;
+        }
+        .stCheckbox label, .stCheckbox label p, .stCheckbox label span {
+            color: #ffffff !important;
+        }
+        .stCheckbox label div {
+            color: #ffffff !important;
+        }
+        .stExpander p, .stExpander li, .stExpander h1, .stExpander h2, .stExpander h3 {
+            color: #ffffff !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+        
+        # Dökümanlar - tek seviye kolonlar (Azure uyumluluğu için)
+        doc_col1, doc_col2, doc_col3 = st.columns([1, 1, 1])
+        
+        with doc_col1:
+            st.session_state['doc_accepted_user_terms'] = st.checkbox(
+                "Okudum, kabul ediyorum", 
+                value=st.session_state['doc_accepted_user_terms'],
+                key="check_user_terms"
+            )
+            if st.button("📄 Kullanıcı Aydınlatma Metni", key="btn_user_terms"):
+                st.session_state['show_user_terms_modal'] = not st.session_state['show_user_terms_modal']
             
-            # Dökümanlar ve onay durumu
-            doc_col1, doc_col2, doc_col3 = st.columns([1, 1, 1])
+            if st.session_state['doc_accepted_user_terms']:
+                st.success("✅ Kabul Edildi")
+        
+        with doc_col2:
+            st.session_state['doc_accepted_privacy'] = st.checkbox(
+                "Okudum, kabul ediyorum",
+                value=st.session_state['doc_accepted_privacy'],
+                key="check_privacy"
+            )
+            if st.button("🔒 Gizlilik Politikası", key="btn_privacy"):
+                st.session_state['show_privacy_modal'] = not st.session_state['show_privacy_modal']
             
-            # Session state'de onay durumlarını kontrol et
-            if 'doc_accepted_user_terms' not in st.session_state:
-                st.session_state['doc_accepted_user_terms'] = False
-            if 'doc_accepted_privacy' not in st.session_state:
-                st.session_state['doc_accepted_privacy'] = False
-            if 'doc_accepted_cookie' not in st.session_state:
-                st.session_state['doc_accepted_cookie'] = False
-            if 'show_user_terms_modal' not in st.session_state:
-                st.session_state['show_user_terms_modal'] = False
-            if 'show_privacy_modal' not in st.session_state:
-                st.session_state['show_privacy_modal'] = False
-            if 'show_cookie_modal' not in st.session_state:
-                st.session_state['show_cookie_modal'] = False
+            if st.session_state['doc_accepted_privacy']:
+                st.success("✅ Kabul Edildi")
+        
+        with doc_col3:
+            st.session_state['doc_accepted_cookie'] = st.checkbox(
+                "Okudum, kabul ediyorum",
+                value=st.session_state['doc_accepted_cookie'],
+                key="check_cookie"
+            )
+            if st.button("🍪 Elektronik İleti Politikası", key="btn_cookie"):
+                st.session_state['show_cookie_modal'] = not st.session_state['show_cookie_modal']
             
-            with doc_col1:
-                # Clickable metin + checkbox
-                col_check, col_text = st.columns([0.15, 0.85])
-                with col_check:
-                    st.session_state['doc_accepted_user_terms'] = st.checkbox(
-                        " ", 
-                        value=st.session_state['doc_accepted_user_terms'],
-                        key="check_user_terms"
-                    )
-                with col_text:
-                    if st.button("📄 Kullanıcı Aydınlatma Metni'ni okudum", key="btn_user_terms", use_container_width=False):
-                        st.session_state['show_user_terms_modal'] = not st.session_state['show_user_terms_modal']
-                
-                # Modal ekranı göster
-                if st.session_state['show_user_terms_modal']:
-                    with st.expander("📄 Kullanıcı Aydınlatma Metni - Tam Metin", expanded=True):
-                        doc_content = get_document("user_terms")
-                        st.markdown(doc_content)
-                
-                if st.session_state['doc_accepted_user_terms']:
-                    st.markdown("<p style='color: #ef4444; font-weight: 700; font-size: 16px;'>✅ Kabul Edildi</p>", unsafe_allow_html=True)
-            
-            with doc_col2:
-                # Clickable metin + checkbox
-                col_check, col_text = st.columns([0.15, 0.85])
-                with col_check:
-                    st.session_state['doc_accepted_privacy'] = st.checkbox(
-                        " ",
-                        value=st.session_state['doc_accepted_privacy'],
-                        key="check_privacy"
-                    )
-                with col_text:
-                    if st.button("🔒 Gizlilik Politikası'nı okudum", key="btn_privacy", use_container_width=False):
-                        st.session_state['show_privacy_modal'] = not st.session_state['show_privacy_modal']
-                
-                # Modal ekranı göster
-                if st.session_state['show_privacy_modal']:
-                    with st.expander("🔒 Gizlilik Politikası - Tam Metin", expanded=True):
-                        doc_content = get_document("privacy")
-                        st.markdown(doc_content)
-                
-                if st.session_state['doc_accepted_privacy']:
-                    st.markdown("<p style='color: #ef4444; font-weight: 700; font-size: 16px;'>✅ Kabul Edildi</p>", unsafe_allow_html=True)
-            
-            with doc_col3:
-                # Clickable metin + checkbox
-                col_check, col_text = st.columns([0.15, 0.85])
-                with col_check:
-                    st.session_state['doc_accepted_cookie'] = st.checkbox(
-                        " ",
-                        value=st.session_state['doc_accepted_cookie'],
-                        key="check_cookie"
-                    )
-                with col_text:
-                    if st.button("🍪 Elektronik İleti Politikası'nı okudum", key="btn_cookie", use_container_width=False):
-                        st.session_state['show_cookie_modal'] = not st.session_state['show_cookie_modal']
-                
-                # Modal ekranı göster
-                if st.session_state['show_cookie_modal']:
-                    with st.expander("🍪 Elektronik İleti Politikası - Tam Metin", expanded=True):
-                        doc_content = get_document("cookie")
-                        st.markdown(doc_content)
-                
-                if st.session_state['doc_accepted_cookie']:
-                    st.markdown("<p style='color: #ef4444; font-weight: 700; font-size: 16px;'>✅ Kabul Edildi</p>", unsafe_allow_html=True)
-            
-            # Tüm dökümanların onaylanıp onaylanmadığını kontrol et
-            all_docs_accepted = (st.session_state.get('doc_accepted_user_terms', False) and
-                                st.session_state.get('doc_accepted_privacy', False) and
-                                st.session_state.get('doc_accepted_cookie', False))
-            
-            # E-posta doğrulama durumunu kontrol et
-            email_verified = False
-            if new_email:
-                email_verified = is_email_verified(new_email) or st.session_state.get(f"email_verified_{new_email}", False)
-            
-            st.markdown("---")
-            
-            # E-posta doğrulama bölümü - sadece tüm dökümanlar onaylandığında göster
-            if not all_docs_accepted:
-                st.warning("⚠️ Devam etmek için lütfen yukarıdaki tüm dökümanları onaylayın.")
-            else:
-                # Email girildiğinde doğrulama sürecini başlat (veya sekmeye girince butonu göster)
-                if not email_verified:
-                    # Show instruction and the Kod Gönder button immediately (even if email empty)
-                    st.info("📧 E-posta adresinizi doğrulamanız gerekiyor. Kod Gönder'e basın ve e-posta adresinizi girin.")
+            if st.session_state['doc_accepted_cookie']:
+                st.success("✅ Kabul Edildi")
+        
+        # Modal ekranları göster (kolonların dışında)
+        if st.session_state['show_user_terms_modal']:
+            with st.expander("📄 Kullanıcı Aydınlatma Metni", expanded=True):
+                doc_content = get_document("user_terms")
+                st.markdown(doc_content)
+        
+        if st.session_state['show_privacy_modal']:
+            with st.expander("🔒 Gizlilik Politikası", expanded=True):
+                doc_content = get_document("privacy")
+                st.markdown(doc_content)
+        
+        if st.session_state['show_cookie_modal']:
+            with st.expander("🍪 Elektronik İleti Politikası", expanded=True):
+                doc_content = get_document("cookie")
+                st.markdown(doc_content)
+        
+        # Tüm dökümanların onaylanıp onaylanmadığını kontrol et
+        all_docs_accepted = (st.session_state.get('doc_accepted_user_terms', False) and
+                            st.session_state.get('doc_accepted_privacy', False) and
+                            st.session_state.get('doc_accepted_cookie', False))
+        
+        # E-posta doğrulama durumunu kontrol et
+        email_verified = False
+        if new_email:
+            email_verified = is_email_verified(new_email) or st.session_state.get(f"email_verified_{new_email}", False)
+        
+        st.markdown("---")
+        
+        # E-posta doğrulama bölümü - sadece tüm dökümanlar onaylandığında göster
+        if not all_docs_accepted:
+            st.warning("⚠️ Devam etmek için lütfen yukarıdaki tüm dökümanları onaylayın.")
+        else:
+            # Email girildiğinde doğrulama sürecini başlat (veya sekmeye girince butonu göster)
+            if not email_verified:
+                # Show instruction and the Kod Gönder button immediately (even if email empty)
+                st.info("📧 E-posta adresinizi doğrulamanız gerekiyor. Kod Gönder'e basın ve e-posta adresinizi girin.")
 
-                    col1, col2, col3 = st.columns([1, 1, 2])
-                    with col1:
-                        if st.button("📨 Kod Gönder", type="primary", use_container_width=True, key="send_code"):
-                            if new_email:
-                                # E-posta format kontrolü
-                                if "@" in new_email and "." in new_email.split("@")[1]:
-                                    verification_code = generate_verification_code()
-                                    # Kodu session state'e kaydet
-                                    store_verification_code(new_email, verification_code)
-                                    # Email göndermeyi dene
-                                    success, message = send_verification_email(new_email, verification_code)
-                                    # Kod gönderildi olarak işaretle
-                                    st.session_state[f"code_sent_{new_email}"] = True
-                                    st.rerun()
-                                else:
-                                    st.error("❌ Geçerli bir e-posta adresi girin!")
-                            else:
-                                st.error("❗ Lütfen önce e-posta adresinizi girin, sonra 'Kod Gönder' butonuna basın.")
-
-                    # If a code was previously sent to this email, show verification input
-                    if new_email and st.session_state.get(f"code_sent_{new_email}", False):
-                        st.success("📧 Doğrulama kodu e-posta adresinize gönderildi!")
-                        # Show a compact input for the 6-digit verification code
-                        code_cols = st.columns([0.45, 2])
-                        with code_cols[0]:
-                            verification_input = st.text_input(
-                                "🔑 E-postanıza gelen 6 haneli kodu girin:",
-                                max_chars=6,
-                                key="verification_code",
-                                placeholder="123456",
-                                help="Lütfen e-postanıza gelen 6 haneli doğrulama kodunu girin"
-                            )
-                        with code_cols[1]:
-                            st.write("")
-
-                        col1, col2 = st.columns([1, 1])
-                        with col1:
-                            if st.button("✅ Doğrula", type="primary", use_container_width=True, key="verify_code"):
-                                # Ensure a 6-digit numeric code is entered
-                                if not verification_input:
-                                    st.error("❌ Lütfen doğrulama kodunu girin!")
-                                elif len(verification_input) != 6 or not verification_input.isdigit():
-                                    st.error("❌ Doğrulama kodu 6 haneli sayısal olmalıdır!")
-                                else:
-                                    success, message = verify_code(new_email, verification_input)
-                                    if success:
-                                        # Kod gönderildi state'ini temizle and mark verified
-                                        st.session_state.pop(f"code_sent_{new_email}", None)
-                                        st.session_state[f"email_verified_{new_email}"] = True
-                                        st.success(f"✅ {message}")
-                                        st.rerun()
-                                    else:
-                                        st.error(f"❌ {message}")
-
-                        with col2:
-                            if st.button("🔄 Yeni Kod Gönder", use_container_width=True, key="resend_code"):
-                                verification_code = generate_verification_code()
-                                store_verification_code(new_email, verification_code)
-                                success, message = send_verification_email(new_email, verification_code)
-                                st.rerun()
-
-                else:
-                    st.success("✅ E-posta adresiniz doğrulandı!")
-
-            # Şifre alanları (sadece e-posta doğrulandığında göster)
-            if email_verified:
-                
-                # Şifre alanları
-                st.info("🔐 **Güçlü Şifre Oluşturun:** En az 8 karakter, 1 rakam ve 1 özel karakter (!@#$%&*) içermelidir.")
-                new_password = st.text_input("🔒 Şifre:", type="password", key="register_password")
-                confirm_password = st.text_input("🔒 Şifre Tekrar:", type="password", key="confirm_password")
-                
-                # Hata mesajları için placeholder oluştur
-                error_placeholder = st.empty()
-
-                if st.button("📝 Hesap Oluştur", type="primary", use_container_width=True, key="create_account_button"):
-                    print(f"[DEBUG] Button clicked - name={new_name}, email={new_email}, pwd_len={len(new_password) if new_password else 0}, confirm_len={len(confirm_password) if confirm_password else 0}")
-                    
-                    # Dökümanları kontrol et
-                    all_docs_accepted = (st.session_state.get('doc_accepted_user_terms', False) and
-                                        st.session_state.get('doc_accepted_privacy', False) and
-                                        st.session_state.get('doc_accepted_cookie', False))
-                    
-                    if not all_docs_accepted:
-                        with error_placeholder.container():
-                            st.error("❌ Lütfen tüm dökümanları okuyup onaylayın!")
-                    elif new_email and new_password and confirm_password:
-                        if new_password == confirm_password:
-                            # Password policy: min 8 chars, at least one digit, at least one special char
-                            has_min_len = len(new_password) >= 8
-                            has_digit = any(ch.isdigit() for ch in new_password)
-                            has_special = any(not ch.isalnum() for ch in new_password)
-                            
-                            print(f"[DEBUG] Password checks - len={len(new_password)}, has_min_len={has_min_len}, has_digit={has_digit}, has_special={has_special}")
-
-                            if not has_min_len:
-                                with error_placeholder.container():
-                                    st.error("❌ **Şifre Çok Kısa!**")
-                                    st.info("💡 Şifreniz en az **8 karakter** uzunluğunda olmalıdır. Örnek: `Guvenli123!`")
-                            elif not has_digit:
-                                with error_placeholder.container():
-                                    st.error("❌ **Şifrede Rakam Yok!**")
-                                    st.info("💡 Şifreniz en az **bir rakam (0-9)** içermelidir. Örnek: `Guvenli123!`")
-                            elif not has_special:
-                                with error_placeholder.container():
-                                    st.error("❌ **Şifrede Özel Karakter Yok!**")
-                                    st.info("💡 Şifreniz en az **bir özel karakter** içermelidir (örn. `!@#$%&*`). Örnek: `Guvenli123!`")
-                            else:
-                                # Onaylanan dökümanları kaydet
-                                accepted_docs = {
-                                    'user_terms': st.session_state.get('doc_accepted_user_terms', False),
-                                    'privacy_policy': st.session_state.get('doc_accepted_privacy', False),
-                                    'cookie_policy': st.session_state.get('doc_accepted_cookie', False),
-                                    'accepted_at': datetime.now().isoformat()
-                                }
-                                
-                                success, message = register_user(new_email, new_password, new_name, accepted_docs)
-                                print(f"[REGISTER RESULT] email={new_email}, success={success}, message={message}")
-                                if success:
-                                    # Yeni kullanıcıya 1 aylık ücretsiz deneme aboneliği tanımla
-                                    try:
-                                        subscriptions = load_subscriptions()
-                                        start_date = datetime.now()
-                                        end_date = start_date + timedelta(days=TRIAL_PERIOD_DAYS)
-                                        subscriptions[new_email.lower()] = {
-                                            "plan": "trial",
-                                            "plan_name": "Deneme (Ücretsiz)",
-                                            "start_date": start_date.strftime("%Y-%m-%d"),
-                                            "end_date": end_date.strftime("%Y-%m-%d"),
-                                            "status": "active",
-                                            "is_trial": True,
-                                            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                            "created_by": "system_auto_trial"
-                                        }
-                                        save_subscriptions(subscriptions)
-                                        print(f"[TRIAL SUBSCRIPTION] 30 gün deneme tanımlandı: {new_email}")
-                                    except Exception as e:
-                                        print(f"[TRIAL ERROR] Deneme aboneliği tanımlanamadı: {e}")
-                                    
-                                    with error_placeholder.container():
-                                        st.success("✅ Hesabınız başarıyla oluşturuldu!")
-                                        st.info("🔑 Lütfen giriş yapma sekmesinde hesabınız ile giriş yapın.")
-                                    
-                                    # Temizlik
-                                    st.session_state.pop(f"email_verified_{new_email}", None)
-                                    if f"code_sent_{new_email}" in st.session_state:
-                                        st.session_state.pop(f"code_sent_{new_email}")
-                                    # Döküman onay state'lerini temizle
-                                    st.session_state.pop('doc_accepted_user_terms', None)
-                                    st.session_state.pop('doc_accepted_privacy', None)
-                                    st.session_state.pop('doc_accepted_cookie', None)
-                                    
-                                    # Giriş yap sekmesine yönlendirme flag'i
-                                    st.session_state['redirect_to_login'] = True
-                                else:
-                                    with error_placeholder.container():
-                                        st.error(f"❌ {message}")
+                if st.button("📨 Kod Gönder", type="primary", key="send_code"):
+                    if new_email:
+                        # E-posta format kontrolü
+                        if "@" in new_email and "." in new_email.split("@")[1]:
+                            verification_code = generate_verification_code()
+                            # Kodu session state'e kaydet
+                            store_verification_code(new_email, verification_code)
+                            # Email göndermeyi dene
+                            success, message = send_verification_email(new_email, verification_code)
+                            # Kod gönderildi olarak işaretle
+                            st.session_state[f"code_sent_{new_email}"] = True
+                            st.rerun()
                         else:
+                            st.error("❌ Geçerli bir e-posta adresi girin!")
+                    else:
+                        st.error("❗ Lütfen önce e-posta adresinizi girin, sonra 'Kod Gönder' butonuna basın.")
+
+                # If a code was previously sent to this email, show verification input
+                if new_email and st.session_state.get(f"code_sent_{new_email}", False):
+                    st.success("📧 Doğrulama kodu e-posta adresinize gönderildi!")
+                    # Show a compact input for the 6-digit verification code
+                    verification_input = st.text_input(
+                        "🔑 E-postanıza gelen 6 haneli kodu girin:",
+                        max_chars=6,
+                        key="verification_code",
+                        placeholder="123456",
+                        help="Lütfen e-postanıza gelen 6 haneli doğrulama kodunu girin"
+                    )
+
+                    # Doğrulama butonları - nested columns kaldırıldı (Azure uyumluluğu için)
+                    if st.button("✅ Doğrula", type="primary", key="verify_code"):
+                        # Ensure a 6-digit numeric code is entered
+                        if not verification_input:
+                            st.error("❌ Lütfen doğrulama kodunu girin!")
+                        elif len(verification_input) != 6 or not verification_input.isdigit():
+                            st.error("❌ Doğrulama kodu 6 haneli sayısal olmalıdır!")
+                        else:
+                            success, message = verify_code(new_email, verification_input)
+                            if success:
+                                # Kod gönderildi state'ini temizle and mark verified
+                                st.session_state.pop(f"code_sent_{new_email}", None)
+                                st.session_state[f"email_verified_{new_email}"] = True
+                                st.success(f"✅ {message}")
+                                st.rerun()
+                            else:
+                                st.error(f"❌ {message}")
+
+                    if st.button("🔄 Yeni Kod Gönder", key="resend_code"):
+                        verification_code = generate_verification_code()
+                        store_verification_code(new_email, verification_code)
+                        success, message = send_verification_email(new_email, verification_code)
+                        st.rerun()
+
+            else:
+                st.success("✅ E-posta adresiniz doğrulandı!")
+
+        # Şifre alanları (sadece e-posta doğrulandığında göster)
+        if email_verified:
+            
+            # Şifre alanları
+            st.info("🔐 **Güçlü Şifre Oluşturun:** En az 8 karakter, 1 rakam ve 1 özel karakter (!@#$%&*) içermelidir.")
+            new_password = st.text_input("🔒 Şifre:", type="password", key="register_password")
+            confirm_password = st.text_input("🔒 Şifre Tekrar:", type="password", key="confirm_password")
+            
+            # Hata mesajları için placeholder oluştur
+            error_placeholder = st.empty()
+
+            if st.button("📝 Hesap Oluştur", type="primary", use_container_width=True, key="create_account_button"):
+                print(f"[DEBUG] Button clicked - name={new_name}, email={new_email}, pwd_len={len(new_password) if new_password else 0}, confirm_len={len(confirm_password) if confirm_password else 0}")
+                
+                # Dökümanları kontrol et
+                all_docs_accepted = (st.session_state.get('doc_accepted_user_terms', False) and
+                                    st.session_state.get('doc_accepted_privacy', False) and
+                                    st.session_state.get('doc_accepted_cookie', False))
+                
+                if not all_docs_accepted:
+                    with error_placeholder.container():
+                        st.error("❌ Lütfen tüm dökümanları okuyup onaylayın!")
+                elif new_email and new_password and confirm_password:
+                    if new_password == confirm_password:
+                        # Password policy: min 8 chars, at least one digit, at least one special char
+                        has_min_len = len(new_password) >= 8
+                        has_digit = any(ch.isdigit() for ch in new_password)
+                        has_special = any(not ch.isalnum() for ch in new_password)
+                        
+                        print(f"[DEBUG] Password checks - len={len(new_password)}, has_min_len={has_min_len}, has_digit={has_digit}, has_special={has_special}")
+
+                        if not has_min_len:
                             with error_placeholder.container():
-                                st.error("❌ Şifreler eşleşmiyor!")
+                                st.error("❌ **Şifre Çok Kısa!**")
+                                st.info("💡 Şifreniz en az **8 karakter** uzunluğunda olmalıdır. Örnek: `Guvenli123!`")
+                        elif not has_digit:
+                            with error_placeholder.container():
+                                st.error("❌ **Şifrede Rakam Yok!**")
+                                st.info("💡 Şifreniz en az **bir rakam (0-9)** içermelidir. Örnek: `Guvenli123!`")
+                        elif not has_special:
+                            with error_placeholder.container():
+                                st.error("❌ **Şifrede Özel Karakter Yok!**")
+                                st.info("💡 Şifreniz en az **bir özel karakter** içermelidir (örn. `!@#$%&*`). Örnek: `Guvenli123!`")
+                        else:
+                            # Onaylanan dökümanları kaydet
+                            accepted_docs = {
+                                'user_terms': st.session_state.get('doc_accepted_user_terms', False),
+                                'privacy_policy': st.session_state.get('doc_accepted_privacy', False),
+                                'cookie_policy': st.session_state.get('doc_accepted_cookie', False),
+                                'accepted_at': datetime.now().isoformat()
+                            }
+                            
+                            success, message = register_user(new_email, new_password, new_name, accepted_docs)
+                            print(f"[REGISTER RESULT] email={new_email}, success={success}, message={message}")
+                            if success:
+                                # Yeni kullanıcıya 1 aylık ücretsiz deneme aboneliği tanımla
+                                try:
+                                    subscriptions = load_subscriptions()
+                                    start_date = datetime.now()
+                                    end_date = start_date + timedelta(days=TRIAL_PERIOD_DAYS)
+                                    subscriptions[new_email.lower()] = {
+                                        "plan": "trial",
+                                        "plan_name": "Deneme (Ücretsiz)",
+                                        "start_date": start_date.strftime("%Y-%m-%d"),
+                                        "end_date": end_date.strftime("%Y-%m-%d"),
+                                        "status": "active",
+                                        "is_trial": True,
+                                        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                        "created_by": "system_auto_trial"
+                                    }
+                                    save_subscriptions(subscriptions)
+                                    print(f"[TRIAL SUBSCRIPTION] 30 gün deneme tanımlandı: {new_email}")
+                                except Exception as e:
+                                    print(f"[TRIAL ERROR] Deneme aboneliği tanımlanamadı: {e}")
+                                
+                                with error_placeholder.container():
+                                    st.success("✅ Hesabınız başarıyla oluşturuldu!")
+                                    st.info("🔑 Lütfen giriş yapma sekmesinde hesabınız ile giriş yapın.")
+                                
+                                # Temizlik
+                                st.session_state.pop(f"email_verified_{new_email}", None)
+                                if f"code_sent_{new_email}" in st.session_state:
+                                    st.session_state.pop(f"code_sent_{new_email}")
+                                # Döküman onay state'lerini temizle
+                                st.session_state.pop('doc_accepted_user_terms', None)
+                                st.session_state.pop('doc_accepted_privacy', None)
+                                st.session_state.pop('doc_accepted_cookie', None)
+                                
+                                # Giriş yap sekmesine yönlendirme flag'i
+                                st.session_state['redirect_to_login'] = True
+                            else:
+                                with error_placeholder.container():
+                                    st.error(f"❌ {message}")
                     else:
                         with error_placeholder.container():
-                            st.error("❌ Lütfen tüm alanları doldurun!")
-            else:
-                pass
+                            st.error("❌ Şifreler eşleşmiyor!")
+                else:
+                    with error_placeholder.container():
+                        st.error("❌ Lütfen tüm alanları doldurun!")
     
     elif selected_tab == "🔄 Şifre Sıfırla":
         show_password_reset_form()
