@@ -6150,17 +6150,17 @@ def show_login_page():
         if st.session_state['show_user_terms_modal']:
             with st.expander("📄 Kullanıcı Aydınlatma Metni", expanded=True):
                 doc_content = get_document("user_terms")
-                st.markdown(doc_content)
+                st.markdown(f'<div style="color: white;">{doc_content}</div>', unsafe_allow_html=True)
         
         if st.session_state['show_privacy_modal']:
             with st.expander("🔒 Gizlilik Politikası", expanded=True):
                 doc_content = get_document("privacy")
-                st.markdown(doc_content)
+                st.markdown(f'<div style="color: white;">{doc_content}</div>', unsafe_allow_html=True)
         
         if st.session_state['show_cookie_modal']:
             with st.expander("🍪 Elektronik İleti Politikası", expanded=True):
                 doc_content = get_document("cookie")
-                st.markdown(doc_content)
+                st.markdown(f'<div style="color: white;">{doc_content}</div>', unsafe_allow_html=True)
         
         # Tüm dökümanların onaylanıp onaylanmadığını kontrol et
         all_docs_accepted = (st.session_state.get('doc_accepted_user_terms', False) and
@@ -6183,7 +6183,21 @@ def show_login_page():
                 # Show instruction and the Kod Gönder button immediately (even if email empty)
                 st.info("📧 E-posta adresinizi doğrulamanız gerekiyor. Kod Gönder'e basın ve e-posta adresinizi girin.")
 
-                if st.button("📨 Kod Gönder", type="primary", key="send_code"):
+                # Cooldown kontrolü (30 saniye)
+                cooldown_key = f"email_cooldown_{new_email}" if new_email else "email_cooldown_empty"
+                last_sent_time = st.session_state.get(cooldown_key, None)
+                cooldown_remaining = 0
+                
+                if last_sent_time:
+                    elapsed = (datetime.now() - last_sent_time).total_seconds()
+                    if elapsed < 30:
+                        cooldown_remaining = int(30 - elapsed)
+                
+                # Buton devre dışı mı kontrol et
+                button_disabled = cooldown_remaining > 0
+                button_label = f"⏳ Bekleyin ({cooldown_remaining}s)" if button_disabled else "📨 Kod Gönder"
+                
+                if st.button(button_label, type="primary", key="send_code", disabled=button_disabled):
                     if new_email:
                         # E-posta format kontrolü
                         if "@" in new_email and "." in new_email.split("@")[1]:
@@ -6194,6 +6208,8 @@ def show_login_page():
                             success, message = send_verification_email(new_email, verification_code)
                             # Kod gönderildi olarak işaretle
                             st.session_state[f"code_sent_{new_email}"] = True
+                            # Cooldown zamanını kaydet
+                            st.session_state[f"email_cooldown_{new_email}"] = datetime.now()
                             st.rerun()
                         else:
                             st.error("❌ Geçerli bir e-posta adresi girin!")
@@ -6203,14 +6219,16 @@ def show_login_page():
                 # If a code was previously sent to this email, show verification input
                 if new_email and st.session_state.get(f"code_sent_{new_email}", False):
                     st.success("📧 Doğrulama kodu e-posta adresinize gönderildi!")
-                    # Show a compact input for the 6-digit verification code
-                    verification_input = st.text_input(
-                        "🔑 E-postanıza gelen 6 haneli kodu girin:",
-                        max_chars=6,
-                        key="verification_code",
-                        placeholder="123456",
-                        help="Lütfen e-postanıza gelen 6 haneli doğrulama kodunu girin"
-                    )
+                    # Show a compact input for the 6-digit verification code (1/10 width)
+                    col_code, col_spacer = st.columns([1, 9])
+                    with col_code:
+                        verification_input = st.text_input(
+                            "🔑 E-postanıza gelen 6 haneli kodu girin:",
+                            max_chars=6,
+                            key="verification_code",
+                            placeholder="123456",
+                            help="Lütfen e-postanıza gelen 6 haneli doğrulama kodunu girin"
+                        )
 
                     # Doğrulama butonları - nested columns kaldırıldı (Azure uyumluluğu için)
                     if st.button("✅ Doğrula", type="primary", key="verify_code"):
@@ -6230,10 +6248,25 @@ def show_login_page():
                             else:
                                 st.error(f"❌ {message}")
 
-                    if st.button("🔄 Yeni Kod Gönder", key="resend_code"):
+                    # Yeni Kod Gönder için cooldown kontrolü
+                    resend_cooldown_key = f"email_cooldown_{new_email}"
+                    resend_last_sent = st.session_state.get(resend_cooldown_key, None)
+                    resend_cooldown_remaining = 0
+                    
+                    if resend_last_sent:
+                        resend_elapsed = (datetime.now() - resend_last_sent).total_seconds()
+                        if resend_elapsed < 30:
+                            resend_cooldown_remaining = int(30 - resend_elapsed)
+                    
+                    resend_disabled = resend_cooldown_remaining > 0
+                    resend_label = f"⏳ Bekleyin ({resend_cooldown_remaining}s)" if resend_disabled else "🔄 Yeni Kod Gönder"
+                    
+                    if st.button(resend_label, key="resend_code", disabled=resend_disabled):
                         verification_code = generate_verification_code()
                         store_verification_code(new_email, verification_code)
                         success, message = send_verification_email(new_email, verification_code)
+                        # Cooldown zamanını güncelle
+                        st.session_state[f"email_cooldown_{new_email}"] = datetime.now()
                         st.rerun()
 
             else:
