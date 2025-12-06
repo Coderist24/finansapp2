@@ -32,7 +32,10 @@ except ImportError:
 
 import os
 import tempfile
+
+# Yahoo Finance timezone cache - import'tan sonra hemen ayarla (cache henüz oluşturulmamıştır)
 import yfinance as yf
+yf.set_tz_cache_location(os.path.join(tempfile.gettempdir(), "yfinance_cache"))
 
 import pandas as pd
 from datetime import datetime, timedelta, time as datetime_time
@@ -88,9 +91,6 @@ def create_yf_session():
 
 # Global yfinance session
 YF_SESSION = create_yf_session()
-
-# Yahoo Finance için Azure uyumlu ayarlar
-yf.set_tz_cache_location(os.path.join(tempfile.gettempdir(), "yfinance_cache"))
 
 # Chrome/Selenium patches for Azure container environment
 import sys
@@ -10750,7 +10750,7 @@ def show_market_analysis():
                                 st.session_state['detailed_data'] = detailed_data
                                 st.session_state['detailed_date_range'] = f"{start_date} - {end_date}"
                                 st.session_state['detailed_category'] = selected_category
-                                st.success(f"✅ Analiz başarıyla tamamlandı! {len(selected_instruments)} enstrüman için toplam {len(detailed_data)} günlük veri alındı.")
+                                st.success(f"✅ Analiz başarıyla tamamlandı!")
                             else:
                                 st.error(f"❌ Seçilen {CURRENT_INSTRUMENT_CATEGORIES[selected_category]['name']} için detaylı veri alınamadı!")
                         except Exception as data_error:
@@ -13123,10 +13123,6 @@ def get_specific_instrument_data(instrument_category, instruments_list, start_da
                                 if column_mapping:
                                     df = df.rename(columns=column_mapping)
                                 
-                                # Debug: Dosyadaki sütunları ve ilk birkaç satırı göster
-                                st.info(f"🔍 Azure dosyasındaki sütunlar: {list(df.columns)[:10]}")
-                                st.info(f"📊 Toplam satır sayısı: {len(df)}")
-                                
                                 # Bu fon için tüm verileri filtrele (case-insensitive ve trim ile)
                                 if 'Fon_Kodu' in df.columns:
                                     # Fon kodlarını normalize et
@@ -13152,10 +13148,6 @@ def get_specific_instrument_data(instrument_category, instruments_list, start_da
                                             fund_df['Tarih'] = pd.to_datetime(fund_df['Tarih'])
                                             # Tarihe göre sırala (en eskiden en yeniye)
                                             fund_df = fund_df.sort_values('Tarih')
-                                        
-                                        # Debug: Kaç farklı tarih var kontrol et
-                                        unique_dates = fund_df['Tarih'].dt.date.nunique()
-                                        st.info(f"📊 {instrument} için Azure'da {len(fund_df)} satır, {unique_dates} benzersiz tarih bulundu")
                                         
                                         # Sadece Azure'da gerçekten var olan tarihleri kullan
                                         found_dates = 0
@@ -13192,7 +13184,7 @@ def get_specific_instrument_data(instrument_category, instruments_list, start_da
                                             current_date += timedelta(days=1)
                                         
                                         if found_dates > 0:
-                                            st.success(f"✅ {instrument} verisi alındı: {found_dates} gün (Azure'dan), {skipped_dates} gün atlandı")
+                                            st.success(f"✅ {instrument} verisi alındı")
                                         else:
                                             st.warning(f"⚠️ {instrument} için {start_date} - {end_date} aralığında hiç veri bulunamadı")
                                     else:
