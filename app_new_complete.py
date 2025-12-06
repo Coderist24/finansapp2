@@ -572,6 +572,11 @@ def inject_dark_theme():
             transition: color 0.2s ease;
         }
 
+        [data-testid="stSidebarNav"] a * {
+            background: transparent !important;
+            box-shadow: none !important;
+        }
+
         [data-testid="stSidebarNav"] a:hover,
         [data-testid="stSidebarNav"] a:focus,
         [data-testid="stSidebarNav"] a[aria-current="page"] {
@@ -579,18 +584,24 @@ def inject_dark_theme():
             background: transparent !important;
         }
 
+        [data-testid="stSidebarNav"] a:hover *,
+        [data-testid="stSidebarNav"] a:focus *,
+        [data-testid="stSidebarNav"] a[aria-current="page"] * {
+            background: transparent !important;
+        }
+
         [data-testid="stSidebar"] [role="listbox"],
         [data-testid="stSidebar"] div[class*="menu"],
         [data-testid="stSidebar"] div[class*="dropdown"],
         [data-testid="stSidebar"] div[class*="select"] {
-            background: #000 !important;
+            background: var(--sidebar-bg) !important;
             color: #fff !important;
             border: none !important;
             box-shadow: none !important;
         }
 
         [data-testid="stSidebar"] [role="listbox"] * {
-            background: #000 !important;
+            background: var(--sidebar-bg) !important;
             color: #fff !important;
             border: none !important;
             box-shadow: none !important;
@@ -1734,6 +1745,24 @@ TURKISH_GOLD_INSTRUMENTS = [
     "ALTIN_IKIBUCUK", "ALTIN_BESLI", "ALTIN_14AYAR", "ALTIN_18AYAR", "ALTIN_22AYAR_BILEZIK"
 ]
 
+# Türk altın çevrimleri (gram cinsinden)
+TURKISH_GOLD_CONVERSIONS = {
+    "ALTIN_GRAM": 1.0,
+    "ALTIN_CEYREK": 1.75,
+    "ALTIN_YARIM": 3.5,
+    "ALTIN_TAM": 7.0,
+    "ALTIN_RESAT": 7.216,
+    "ALTIN_CUMHURIYET": 7.216,
+    "ALTIN_ATA": 7.216,
+    "ALTIN_HAMIT": 3.608,
+    "ALTIN_IKIBUCUK": 4.26,
+    "ALTIN_BESLI": 8.52,
+    "ALTIN_14AYAR": 0.583,  # 14/24 saflık
+    "ALTIN_18AYAR": 0.75,   # 18/24 saflık
+    "ALTIN_22AYAR_BILEZIK": 0.916,  # 22/24 saflık
+    "ALTIN_ONS_TRY": 31.1035  # 1 ons = 31.1035 gram
+}
+
 # ================ KULLANICI YÖNETİMİ VE PORTFÖYler ================
 
 # Kullanıcı veritabanı dosyası
@@ -2180,6 +2209,60 @@ blob_storage = get_azure_blob_storage()
 def hash_password(password):
     """Şifreyi güvenli bir şekilde hash'le"""
     return hashlib.sha256(password.encode()).hexdigest()
+
+# Beni Hatırla (Remember Me) Fonksiyonları
+REMEMBER_ME_FILE = "remember_me.json"
+
+def save_remembered_credentials(email, password):
+    """Email ve şifreyi hatırla JSON dosyasına kaydet"""
+    try:
+        remembered_data = {
+            "email": email,
+            "password": password,  # Şifre plain text olarak (çünkü direkt giriş için gerekli)
+            "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        json_data = json.dumps(remembered_data, ensure_ascii=False, indent=2)
+        
+        # Azure Blob Storage'a kaydet
+        if blob_storage and blob_storage.blob_service_client:
+            success = blob_storage.upload_file(file_name=REMEMBER_ME_FILE, data=json_data.encode('utf-8'))
+            if success:
+                return True
+    except Exception as e:
+        pass  # Hata olsa bile sessizce devam et
+    
+    return False
+
+def load_remembered_credentials():
+    """Kaydedilen email ve şifreyi hatırla JSON dosyasından yükle"""
+    try:
+        # Azure Blob Storage'dan yükle
+        if blob_storage and blob_storage.blob_service_client:
+            blob_data = blob_storage.download_file(REMEMBER_ME_FILE)
+            if blob_data:
+                try:
+                    remembered_data = json.loads(blob_data.decode('utf-8'))
+                    return remembered_data.get("email", ""), remembered_data.get("password", "")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    
+    return "", ""
+
+def clear_remembered_credentials():
+    """Kaydedilen email ve şifreyi sil"""
+    try:
+        if blob_storage and blob_storage.blob_service_client:
+            # Blob Storage'da dosya silme işlemi
+            # Not: Şu anda blob_storage sınıfında delete_file metodu yok olabilir
+            # Alternatif olarak boş veri gönderelim
+            blob_storage.upload_file(file_name=REMEMBER_ME_FILE, data=b"{}")
+            return True
+    except Exception:
+        pass
+    
+    return False
 
 # Kullanıcı veritabanını yükle
 @st.cache_data(ttl=60)  # 1 dakika cache
@@ -3438,6 +3521,159 @@ TURKISH_GOLD_SCHEMA = pa.schema([
     pa.field('Source', pa.string()),
     pa.field('Update_Time', pa.timestamp('ms'))
 ])
+
+def calculate_turkish_gold_prices(target_date, is_today=False):
+    """
+    Belirtilen tarih için Türk altın fiyatlarını hesapla
+    
+    Args:
+        target_date: Fiyat hesaplanacak tarih (datetime.date)
+        is_today: Bugün için mi hesaplanıyor (True ise Truncgill API kullan)
+    
+    Returns:
+        dict: {instrument_code: price} formatında fiyatlar
+    """
+    from datetime import datetime, timedelta
+    import time as time_module
+    
+    try:
+        # Bugün için direkt Truncgill API'den al
+        if is_today:
+            try:
+                api_url = "https://finans.truncgil.com/today.json"
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Accept': 'application/json',
+                }
+                
+                response = requests.get(api_url, headers=headers, timeout=10)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    def parse_price(price_str):
+                        if isinstance(price_str, (int, float)):
+                            return float(price_str)
+                        if isinstance(price_str, str):
+                            try:
+                                return float(price_str.replace(',', '').replace('.', '').replace(' ', '')) / 100
+                            except:
+                                return 0.0
+                        return 0.0
+                    
+                    gold_prices = {}
+                    
+                    # API'den gelen verileri map et
+                    api_mapping = {
+                        'gram-altin': 'ALTIN_GRAM',
+                        'ceyrek-altin': 'ALTIN_CEYREK',
+                        'yarim-altin': 'ALTIN_YARIM',
+                        'tam-altin': 'ALTIN_TAM',
+                        'resat-altini': 'ALTIN_RESAT',
+                        'cumhuriyet-altini': 'ALTIN_CUMHURIYET',
+                        'ata-altin': 'ALTIN_ATA',
+                        'hamit-altin': 'ALTIN_HAMIT',
+                        'ikibucuk-altin': 'ALTIN_IKIBUCUK',
+                        'besli-altin': 'ALTIN_BESLI',
+                        '14-ayar-altin': 'ALTIN_14AYAR',
+                        '18-ayar-altin': 'ALTIN_18AYAR',
+                        '22-ayar-bilezik': 'ALTIN_22AYAR_BILEZIK'
+                    }
+                    
+                    for api_key, our_key in api_mapping.items():
+                        if api_key in data:
+                            gold_data = data[api_key]
+                            alış = parse_price(gold_data.get('Alış', gold_data.get('alis', '0')))
+                            satış = parse_price(gold_data.get('Satış', gold_data.get('satis', '0')))
+                            current_price = alış if alış > 0 else satış
+                            
+                            if current_price > 0:
+                                gold_prices[our_key] = current_price
+                    
+                    # Ons fiyatını hesapla
+                    if 'ALTIN_GRAM' in gold_prices:
+                        gold_prices['ALTIN_ONS_TRY'] = gold_prices['ALTIN_GRAM'] * 31.1035
+                    
+                    return gold_prices
+                    
+            except Exception as e:
+                st.warning(f"⚠️ Truncgill API hatası: {str(e)}, Yahoo Finance'a geçiliyor...")
+        
+        # Geçmiş tarihler için Yahoo Finance'tan hesapla
+        # 1. Ounce altın fiyatını al (GC=F)
+        try:
+            gold_ticker = yf.Ticker("GC=F", session=YF_SESSION)
+            
+            # Tarihi datetime'a çevir
+            start_dt = datetime.combine(target_date, datetime.min.time())
+            end_dt = start_dt + timedelta(days=1)
+            
+            gold_hist = gold_ticker.history(start=start_dt, end=end_dt)
+            
+            if gold_hist.empty:
+                # O gün veri yoksa önceki 5 günü dene
+                for i in range(1, 6):
+                    prev_date = target_date - timedelta(days=i)
+                    prev_start = datetime.combine(prev_date, datetime.min.time())
+                    prev_end = prev_start + timedelta(days=1)
+                    gold_hist = gold_ticker.history(start=prev_start, end=prev_end)
+                    if not gold_hist.empty:
+                        break
+            
+            if gold_hist.empty:
+                return {}
+            
+            # Ounce fiyatı (USD)
+            ounce_price_usd = float(gold_hist['Close'].iloc[0])
+            
+        except Exception as e:
+            st.warning(f"⚠️ Yahoo Finance altın fiyatı alınamadı: {str(e)}")
+            return {}
+        
+        time_module.sleep(0.3)  # Rate limiting
+        
+        # 2. USD/TRY kurunu al
+        try:
+            usdtry_ticker = yf.Ticker("USDTRY=X", session=YF_SESSION)
+            usdtry_hist = usdtry_ticker.history(start=start_dt, end=end_dt)
+            
+            if usdtry_hist.empty:
+                # O gün veri yoksa önceki 5 günü dene
+                for i in range(1, 6):
+                    prev_date = target_date - timedelta(days=i)
+                    prev_start = datetime.combine(prev_date, datetime.min.time())
+                    prev_end = prev_start + timedelta(days=1)
+                    usdtry_hist = usdtry_ticker.history(start=prev_start, end=prev_end)
+                    if not usdtry_hist.empty:
+                        break
+            
+            if usdtry_hist.empty:
+                return {}
+            
+            # USD/TRY kuru
+            usdtry_rate = float(usdtry_hist['Close'].iloc[0])
+            
+        except Exception as e:
+            st.warning(f"⚠️ Yahoo Finance USD/TRY kuru alınamadı: {str(e)}")
+            return {}
+        
+        # 3. TL cinsinden fiyatları hesapla
+        # Önce gram altın fiyatını hesapla (1 ons = 31.1035 gram)
+        gram_price_try = (ounce_price_usd / 31.1035) * usdtry_rate
+        
+        gold_prices = {}
+        
+        # Tüm Türk altın enstrümanları için fiyat hesapla
+        for instrument_code in TURKISH_GOLD_INSTRUMENTS:
+            if instrument_code in TURKISH_GOLD_CONVERSIONS:
+                conversion_factor = TURKISH_GOLD_CONVERSIONS[instrument_code]
+                gold_prices[instrument_code] = gram_price_try * conversion_factor
+        
+        return gold_prices
+        
+    except Exception as e:
+        st.error(f"❌ Türk altın fiyatları hesaplama hatası: {str(e)}")
+        return {}
 
 class TurkishGoldDataManager:
     """Turkish gold fiyatlarını Azure Blob Storage'da Parquet formatında günlük tarih bazlı yönetmek için sınıf"""
@@ -5661,11 +5897,20 @@ def show_subscription_expired_page():
             st.metric("Bitiş", subscription.get("end_date", "-"))
     
     st.markdown("---")
-    if st.button("🚪 Çıkış Yap", type="primary", use_container_width=True):
-        for key in ['logged_in', 'user_email', 'user_name']:
-            if key in st.session_state:
-                del st.session_state[key]
-        st.rerun()
+    col_logout1, col_logout2 = st.columns(2)
+    with col_logout1:
+        if st.button("🚪 Çıkış Yap", type="primary", use_container_width=True):
+            # Çıkış sırasında "Beni Hatırla" verilerini temizle
+            clear_remembered_credentials()
+            for key in ['logged_in', 'user_email', 'user_name']:
+                if key in st.session_state:
+                    del st.session_state[key]
+            st.rerun()
+    with col_logout2:
+        if st.button("🔐 Beni Hatırlamayı Sil", use_container_width=True):
+            clear_remembered_credentials()
+            st.success("✅ Kaydedilen bilgiler silindi!")
+            st.info("Bir sonraki girişte login bilgilerini tekrar girmeniz gerekecek.")
 
 # ================ ADMİN PANELİ ================
 
@@ -6057,8 +6302,9 @@ def show_login_page():
             
             # Form - nested columns kaldırıldı (Azure uyumluluğu için)
             with st.form("login_form"):
-                email = st.text_input("📧 Email:", key="login_email")
-                password = st.text_input("🔒 Şifre:", type="password", key="login_password")
+                email = st.text_input("📧 Email:", value=st.session_state.get('remembered_email', ''), key="login_email")
+                password = st.text_input("🔒 Şifre:", type="password", value=st.session_state.get('remembered_password', ''), key="login_password")
+                remember_me = st.checkbox("✅ Beni Hatırla", value=False, key="login_remember_me")
 
                 # Butonlar alt alta (nested columns Azure'da desteklenmiyor)
                 login_submitted = st.form_submit_button("🚀 Giriş Yap", type="primary", use_container_width=True)
@@ -6069,6 +6315,14 @@ def show_login_page():
                     if authenticate_user(email, password):
                         st.session_state['logged_in'] = True
                         st.session_state['user_email'] = email
+                        
+                        # Beni Hatırla - Checkbox'ı işaretliyse, credentials'ı kaydet
+                        if st.session_state.get('login_remember_me', False):
+                            save_remembered_credentials(email, password)
+                        else:
+                            # Checkbox işaretli değilse, kaydedilen credentials'ı sil
+                            clear_remembered_credentials()
+                        
                         # Kullanıcı değiştiğinde önceki portföy önbelleğini ve ilgili state'leri temizle
                         for _k in [
                             'portfolio_initialized',
@@ -7312,6 +7566,8 @@ def show_main_app():
     
     with col3:
         if st.button("🚪 Çıkış Yap", type="secondary"):
+            # Çıkış sırasında "Beni Hatırla" verilerini temizle
+            clear_remembered_credentials()
             # Oturum ve kullanıcı bilgilerini temizle
             for key in ['logged_in', 'user_email', 'user_name']:
                 if key in st.session_state:
@@ -8663,10 +8919,6 @@ def show_add_transaction():
                 if selected_category != "CASH":
                     current_price = get_current_price(selected_instrument, selected_category)
                     instrument_currency = get_specific_instrument_currency(selected_instrument, selected_category)
-                    if current_price > 0:
-                        st.info(f"💰 **Güncel Fiyat:** {current_price:.2f} {instrument_currency}")
-                    else:
-                        st.warning("⚠️ Güncel fiyat alınamadı")
                 else:
                     st.info("💡 **Nakit:** Fiyat = 1.0")
     
@@ -8752,12 +9004,6 @@ def show_add_transaction():
             with st.spinner("📊 Güncel fiyat bilgisi alınıyor..."):
                 current_price = get_current_price(selected_instrument, selected_category)
                 instrument_currency = get_specific_instrument_currency(selected_instrument, selected_category)
-                
-                # Güncel fiyat bilgisini göster
-                if current_price > 0:
-                    st.info(f"📈 **{selected_instrument}** güncel fiyat: **{current_price:.2f} {instrument_currency}**")
-                else:
-                    st.warning(f"⚠️ {selected_instrument} için güncel fiyat alınamadı")
         else:
             current_price = 100.0
             instrument_currency = "₺" if selected_category == "BIST" else "$"
@@ -13058,43 +13304,73 @@ def get_specific_instrument_data(instrument_category, instruments_list, start_da
                 time_module.sleep(0.5)  # 500ms bekleme
             
             try:
-                # Türk altın fiyatları için özel işlem - sadece parquet dosyasından oku
+                # Türk altın fiyatları için özel işlem - Yahoo Finance'tan hesapla (blob okuma yok)
                 if instrument in turkish_gold_instruments:
                     try:
-                        # Parquet dosyasından tarihsel veriyi al
-                        historical_data = turkish_gold_dm.get_historical_data(start_date, end_date)
+                        # Bugünün tarihi mi kontrol et
+                        today = datetime.now().date()
                         
-                        if not historical_data.empty:
-                            # Bu enstrüman için veri var mı kontrol et
-                            instrument_data = historical_data[historical_data['Instrument_Code'] == instrument]
+                        # İstenen tarih aralığındaki her gün için işlem yap
+                        current_date = start_date
+                        found_count = 0
+                        
+                        while current_date <= end_date:
+                            # Bugün için mi hesaplıyoruz?
+                            is_today = (current_date == today)
                             
-                            if not instrument_data.empty:
-                                # Parquet dosyasından tarihsel veriyi kullan
-                                for _, row in instrument_data.iterrows():
-                                    data_row = {
-                                        'Kod': instrument,
-                                        'Adı': row['Instrument_Name'],
-                                        'Tarih': row['Tarih'].strftime('%Y-%m-%d') if hasattr(row['Tarih'], 'strftime') else str(row['Tarih']),
-                                        'Açılış': float(row['Price']),
-                                        'En Yüksek': float(row['Price']),  # Parquet'te günlük ayrım yok, aynı fiyat
-                                        'En Düşük': float(row['Price']),
-                                        'Kapanış': float(row['Price']),
-                                        'Hacim': 0,
-                                        'Kategori': category_info["name"],
-                                        'Para Birimi': "₺"
-                                    }
-                                    df_list.append(data_row)
+                            # O gün için fiyatları hesapla
+                            gold_prices = calculate_turkish_gold_prices(current_date, is_today=is_today)
+                            
+                            if gold_prices and instrument in gold_prices:
+                                price = gold_prices[instrument]
                                 
-                                st.success(f"✅ {instrument} verisi alındı (Parquet: {len(instrument_data)} gün)")
-                            else:
-                                # Bu enstrüman için parquet'te veri yok
-                                st.warning(f"⚠️ {instrument} için parquet dosyasında {start_date} - {end_date} tarih aralığında veri bulunamadı")
+                                # İnstrüman adını belirle
+                                instrument_names = {
+                                    "ALTIN_GRAM": "Gram Altın",
+                                    "ALTIN_CEYREK": "Çeyrek Altın",
+                                    "ALTIN_YARIM": "Yarım Altın",
+                                    "ALTIN_TAM": "Tam Altın",
+                                    "ALTIN_ONS_TRY": "Ons Altın (TRY)",
+                                    "ALTIN_RESAT": "Reşat Altını",
+                                    "ALTIN_CUMHURIYET": "Cumhuriyet Altını",
+                                    "ALTIN_ATA": "Ata Altını",
+                                    "ALTIN_HAMIT": "Hamit Altını",
+                                    "ALTIN_IKIBUCUK": "İkibuçuk Altın",
+                                    "ALTIN_BESLI": "Beşli Altın",
+                                    "ALTIN_14AYAR": "14 Ayar Altın",
+                                    "ALTIN_18AYAR": "18 Ayar Altın",
+                                    "ALTIN_22AYAR_BILEZIK": "22 Ayar Bilezik"
+                                }
+                                
+                                data_row = {
+                                    'Kod': instrument,
+                                    'Adı': instrument_names.get(instrument, instrument),
+                                    'Tarih': current_date.strftime('%Y-%m-%d'),
+                                    'Açılış': float(price),
+                                    'En Yüksek': float(price),
+                                    'En Düşük': float(price),
+                                    'Kapanış': float(price),
+                                    'Hacim': 0,
+                                    'Kategori': category_info["name"],
+                                    'Para Birimi': "₺"
+                                }
+                                df_list.append(data_row)
+                                found_count += 1
+                            
+                            # Bir sonraki güne geç
+                            current_date += timedelta(days=1)
+                            
+                            # Rate limiting (bugün hariç)
+                            if not is_today and current_date <= end_date:
+                                time_module.sleep(0.3)
+                        
+                        if found_count > 0:
+                            st.success(f"✅ {instrument} verisi alındı ({found_count} gün)")
                         else:
-                            # Parquet dosyası boş veya tarih aralığında veri yok
-                            st.warning(f"⚠️ {instrument} için parquet dosyasında {start_date} - {end_date} tarih aralığında veri bulunamadı")
+                            st.warning(f"⚠️ {instrument} için {start_date} - {end_date} tarih aralığında veri hesaplanamadı")
                         
                     except Exception as e:
-                        st.error(f"❌ {instrument} için parquet dosyası okunurken hata: {str(e)}")
+                        st.error(f"❌ {instrument} için fiyat hesaplama hatası: {str(e)}")
                         continue
 
                 # TEFAS fonları için özel işlem
@@ -13363,6 +13639,18 @@ if 'logged_in' not in st.session_state:
         st.session_state['user_name'] = 'Erdal Ural (Test Kullanıcısı)'
     else:
         st.session_state['logged_in'] = False
+
+# Beni Hatırla (Remember Me) session state başlatma
+if 'remembered_email' not in st.session_state:
+    st.session_state['remembered_email'] = ""
+if 'remembered_password' not in st.session_state:
+    st.session_state['remembered_password'] = ""
+
+# Load remembered credentials from storage at app startup
+_remembered_email, _remembered_password = load_remembered_credentials()
+if _remembered_email and _remembered_password:
+    st.session_state['remembered_email'] = _remembered_email
+    st.session_state['remembered_password'] = _remembered_password
 
 # Load persisted job settings (scheduler) from blob and apply defaults
 try:
