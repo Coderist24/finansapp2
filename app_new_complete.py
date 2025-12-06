@@ -30,18 +30,68 @@ except ImportError:
     def get_document(doc_type):
         return ""
 
+import os
+import tempfile
 import yfinance as yf
+
 import pandas as pd
 from datetime import datetime, timedelta, time as datetime_time
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import io
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import time
 import hashlib
 import json
-import os
-import tempfile
+
+# Yahoo Finance için özel session oluştur (curl_cffi ile)
+try:
+    from curl_cffi import requests as curl_requests
+    USE_CURL_CFFI = True
+except ImportError:
+    USE_CURL_CFFI = False
+    curl_requests = None
+
+def create_yf_session():
+    """Yahoo Finance için retry mekanizmalı session oluştur"""
+    if USE_CURL_CFFI:
+        # curl_cffi session (yfinance'ın yeni gereksinimi)
+        session = curl_requests.Session()
+    else:
+        # Fallback: normal requests session
+        session = requests.Session()
+        
+        # Retry stratejisi
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "OPTIONS"]
+        )
+        
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+    
+    # User-Agent header ekle (önemli!)
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate',
+        'Connection': 'keep-alive',
+    })
+    
+    return session
+
+# Global yfinance session
+YF_SESSION = create_yf_session()
+
+# Yahoo Finance için Azure uyumlu ayarlar
+yf.set_tz_cache_location(os.path.join(tempfile.gettempdir(), "yfinance_cache"))
+
 # Chrome/Selenium patches for Azure container environment
 import sys
 try:
@@ -6773,14 +6823,14 @@ def get_current_price(instrument_code, category):
                             price = float(data['last'])
                             return price
                     
-                    # İkisi de başarısızsa USD üzerinden hesaplama
+                    # İkisi de başarısızsa USD üzerinden hesaplama (session ile)
                     usd_symbol = instrument_code.replace("-TRY", "-USD")
-                    usd_ticker = yf.Ticker(usd_symbol)
+                    usd_ticker = yf.Ticker(usd_symbol, session=YF_SESSION)
                     usd_hist = usd_ticker.history(period="1d")
                     
                     if not usd_hist.empty:
-                        # USD/TRY kurunu al
-                        usdtry_ticker = yf.Ticker("USDTRY=X")
+                        # USD/TRY kurunu al (session ile)
+                        usdtry_ticker = yf.Ticker("USDTRY=X", session=YF_SESSION)
                         usdtry_hist = usdtry_ticker.history(period="1d")
                         
                         if not usdtry_hist.empty:
@@ -6795,15 +6845,16 @@ def get_current_price(instrument_code, category):
                 except Exception as e:
                     return 0
             
-            # USD ve diğer çiftler için normal Yahoo Finance
+            # USD ve diğer çiftler için normal Yahoo Finance (session ile)
             else:
                 try:
-                    ticker = yf.Ticker(instrument_code)
+                    ticker = yf.Ticker(instrument_code, session=YF_SESSION)
                     hist = ticker.history(period="1d")
                     if not hist.empty:
                         return hist['Close'].iloc[-1]
                     return 0
-                except Exception as e:                    return 0
+                except Exception as e:
+                    return 0
         
         # Türk altını için özel hesaplama
         if instrument_code in TURKISH_GOLD_INSTRUMENTS:
@@ -6817,7 +6868,8 @@ def get_current_price(instrument_code, category):
         ticker_symbol = f"{instrument_code}{suffix}"
         
         try:
-            ticker = yf.Ticker(ticker_symbol)
+            # Session ile yfinance Ticker oluştur (Azure uyumlu)
+            ticker = yf.Ticker(ticker_symbol, session=YF_SESSION)
             
             # Önce 1 günlük veriyi dene
             hist = ticker.history(period="1d")
@@ -7008,13 +7060,13 @@ def get_historical_price(instrument_code, category, date):
                 if not hasattr(date, 'year'):
                     date = datetime.strptime(date, '%d/%m/%Y').date() if isinstance(date, str) else date
                 
-                usdtry = yf.Ticker("USDTRY=X")
+                usdtry = yf.Ticker("USDTRY=X", session=YF_SESSION)
                 start_date = date - timedelta(days=7)  # 7 gün öncesinden başla
                 end_date = date + timedelta(days=1)
                 usdtry_hist = usdtry.history(start=start_date, end=end_date)
                 
                 # O tarihteki altın fiyatını al
-                gold_usd = yf.Ticker("GC=F")
+                gold_usd = yf.Ticker("GC=F", session=YF_SESSION)
 
                 gold_hist = gold_usd.history(start=start_date, end=end_date)
                 
@@ -7060,12 +7112,12 @@ def get_historical_price(instrument_code, category, date):
                     # Geçmiş tarihlerde Binance TR API'si mevcut değildi, USD üzerinden hesapla
                     usd_symbol = instrument_code.replace("-TRY", "-USD")
                     
-                    # USD fiyatını al
-                    usd_ticker = yf.Ticker(usd_symbol)
+                    # USD fiyatını al (session ile)
+                    usd_ticker = yf.Ticker(usd_symbol, session=YF_SESSION)
                     usd_hist = usd_ticker.history(start=start_date, end=end_date)
                     
-                    # USD/TRY kurunu al
-                    usdtry_ticker = yf.Ticker("USDTRY=X")
+                    # USD/TRY kurunu al (session ile)
+                    usdtry_ticker = yf.Ticker("USDTRY=X", session=YF_SESSION)
                     usdtry_hist = usdtry_ticker.history(start=start_date, end=end_date)
                     
                     if not usd_hist.empty and not usdtry_hist.empty:
@@ -7093,12 +7145,12 @@ def get_historical_price(instrument_code, category, date):
                 except Exception as e:
                     return 0
             
-            # USD ve diğer çiftler için normal Yahoo Finance
+            # USD ve diğer çiftler için normal Yahoo Finance (session ile)
             else:
-                ticker = yf.Ticker(instrument_code)
+                ticker = yf.Ticker(instrument_code, session=YF_SESSION)
         else:
-            # Kripto olmayan enstrümanlar
-            ticker = yf.Ticker(ticker_symbol)
+            # Kripto olmayan enstrümanlar (session ile)
+            ticker = yf.Ticker(ticker_symbol, session=YF_SESSION)
         
         hist = ticker.history(start=start_date, end=end_date)
         
@@ -11788,9 +11840,9 @@ def get_stock_display_name(stock_code):
             # Artık basit string formatında
             return str(stock_info).strip()
         
-        # Eğer BIST stocks'ta yoksa Yahoo Finance'den al
+        # Eğer BIST stocks'ta yoksa Yahoo Finance'den al (session ile)
         try:
-            ticker = yf.Ticker(f"{stock_code}.IS")
+            ticker = yf.Ticker(f"{stock_code}.IS", session=YF_SESSION)
             info = ticker.info
             if info and info.get('longName'):
                 return str(info['longName']).strip()
@@ -12661,12 +12713,12 @@ def get_universal_data(instrument_category, selected_instruments, start_date=Non
                     else:
                         # Detaylı görünüm için tarihsel hesaplama
                         try:
-                            # USD/TRY kurunu tarihsel olarak al
-                            usdtry = yf.Ticker("USDTRY=X")
+                            # USD/TRY kurunu tarihsel olarak al (session ile)
+                            usdtry = yf.Ticker("USDTRY=X", session=YF_SESSION)
                             usdtry_hist = usdtry.history(start=start_date, end=end_date)
                             
-                            # Altın fiyatını USD'den tarihsel olarak al
-                            gold_usd = yf.Ticker("GC=F")
+                            # Altın fiyatını USD'den tarihsel olarak al (session ile)
+                            gold_usd = yf.Ticker("GC=F", session=YF_SESSION)
                             gold_hist = gold_usd.history(start=start_date, end=end_date)
                             
                             if not usdtry_hist.empty and not gold_hist.empty:
@@ -12811,9 +12863,9 @@ def get_universal_data(instrument_category, selected_instruments, start_date=Non
                             continue
                     
                     else:
-                        # Normal Yahoo Finance işlemi
+                        # Normal Yahoo Finance işlemi (session ile)
                         ticker_symbol = f"{instrument}{suffix}"
-                        ticker = yf.Ticker(ticker_symbol)
+                        ticker = yf.Ticker(ticker_symbol, session=YF_SESSION)
                         info = ticker.info
                         
                         # Tarih aralığına göre veri çek
@@ -12925,7 +12977,7 @@ def get_bist_data_from_yahoo(start_date=None, end_date=None):
         
         for i, stock in enumerate(bist_stocks):
             try:
-                ticker = yf.Ticker(f"{stock}.IS")
+                ticker = yf.Ticker(f"{stock}.IS", session=YF_SESSION)
                 info = ticker.info
                 
                 # Tarih aralığına göre veri çek
@@ -13169,7 +13221,7 @@ def get_specific_instrument_data(instrument_category, instruments_list, start_da
                     
                     while retry_count < max_retries and (hist is None or hist.empty):
                         try:
-                            ticker = yf.Ticker(ticker_symbol)
+                            ticker = yf.Ticker(ticker_symbol, session=YF_SESSION)
                             hist = ticker.history(start=start_date, end=end_date)
                             
                             if not hist.empty:
@@ -13242,7 +13294,7 @@ def get_specific_stock_data(stocks_list, start_date, end_date):
                 
                 while retry_count < max_retries and (hist is None or hist.empty):
                     try:
-                        ticker = yf.Ticker(f"{stock}.IS")
+                        ticker = yf.Ticker(f"{stock}.IS", session=YF_SESSION)
                         hist = ticker.history(start=start_date, end=end_date)
                         
                         if not hist.empty:
