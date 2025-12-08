@@ -2709,6 +2709,62 @@ def send_feedback_email(feedback_type, subject, message, user_email, user_name):
         print(f"[FEEDBACK ERROR] {error_msg}")
         return False, f"❌ {error_msg}"
 
+def send_new_user_notification(user_email, user_name):
+    """Yeni kullanıcı kaydı yapıldığında admin'e bilgilendirme maili gönder"""
+    try:
+        # SMTP ayarları
+        smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
+        smtp_port = int(os.getenv('SMTP_PORT', '587'))
+        sender_email = os.getenv('SMTP_USERNAME') or os.getenv('EMAIL_FROM')
+        sender_password = os.getenv('SMTP_PASSWORD', '')
+        sender_password = sender_password.replace(' ', '')
+        
+        if not sender_email or not sender_password:
+            raise ValueError("E-posta bilgileri environment variables'da tanımlı değil")
+        
+        # Admin email
+        admin_email = "infofinansapp@gmail.com"
+        
+        # Admin'e gönderilecek email
+        admin_subject = f"🆕 Yeni Kullanıcı Kaydı - {user_name}"
+        admin_body = f"""
+        Yeni bir kullanıcı platformaya kayıt olmuştur.
+        
+        Kullanıcı Bilgileri:
+        ─────────────────
+        Ad/Soyadı: {user_name}
+        E-posta: {user_email}
+        Kayıt Tarihi: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+        
+        Abonelik: 30 Günlük Deneme (Otomatik Tanımlandı)
+        Deneme Bitiş: {(datetime.now() + timedelta(days=TRIAL_PERIOD_DAYS)).strftime('%Y-%m-%d')}
+        
+        ---
+        Finans Platformu Otomatik Bildirimi
+        """
+        
+        # Admin'e email gönder
+        msg_admin = MIMEMultipart()
+        msg_admin['From'] = sender_email
+        msg_admin['To'] = admin_email
+        msg_admin['Subject'] = admin_subject
+        msg_admin.attach(MIMEText(admin_body, 'plain', 'utf-8'))
+        
+        # Email'i gönder
+        server = smtplib.SMTP(smtp_server, smtp_port, timeout=10)
+        server.starttls()
+        server.login(sender_email, sender_password)
+        server.send_message(msg_admin)
+        server.quit()
+        
+        print(f"[NEW USER] ✅ Admin bilgilendirme maili gönderildi: {admin_email}")
+        return True
+        
+    except Exception as e:
+        error_msg = f"Yeni kullanıcı maili gönderme hatası: {str(e)}"
+        print(f"[NEW USER ERROR] {error_msg}")
+        return False
+
 def store_verification_code(email, code):
     """Doğrulama kodunu geçici olarak sakla"""
     if 'verification_codes' not in st.session_state:
@@ -2880,6 +2936,12 @@ def register_user(email, password, name, accepted_docs=None):
     
     # Kullanıcı kayıt logunu tut
     log_user_registration(email, name, accepted_docs)
+    
+    # Admin'e yeni kullanıcı bilgilendirme maili gönder
+    try:
+        send_new_user_notification(email, name)
+    except Exception as e:
+        print(f"[NEW USER EMAIL] Admin bilgilendirme maili gönderilemedi: {str(e)}")
     
     return True, "Hesap başarıyla oluşturuldu!"
 
@@ -6285,17 +6347,26 @@ def show_login_page():
     
     # Seçilen tab'a göre içerik göster
     if selected_tab == "🔑 Giriş Yap":
+        # Kaydedilen bilgileri yükle (ilk defa)
+        if 'remembered_email' not in st.session_state:
+            remembered_email, remembered_password = load_remembered_credentials()
+            st.session_state['remembered_email'] = remembered_email
+            st.session_state['remembered_password'] = remembered_password
+        
         # Ana layout: Sol taraf giriş formu, sağ taraf abonelik bilgileri
         main_left, main_right = st.columns([1, 1])
         
         with main_left:
             st.subheader("👤 Mevcut Hesaba Giriş")
             
-            # CSS - sadece butonları 1/3 boyutuna indir
+            # CSS - sadece butonları 1/3 boyutuna indir ve checkbox yazısını beyaz yap
             st.markdown("""
             <style>
             [data-testid="stForm"] button {
                 max-width: 33.33% !important;
+            }
+            .stCheckbox label, .stCheckbox label p, .stCheckbox label span {
+                color: #ffffff !important;
             }
             </style>
             """, unsafe_allow_html=True)
@@ -6304,7 +6375,7 @@ def show_login_page():
             with st.form("login_form"):
                 email = st.text_input("📧 Email:", value=st.session_state.get('remembered_email', ''), key="login_email")
                 password = st.text_input("🔒 Şifre:", type="password", value=st.session_state.get('remembered_password', ''), key="login_password")
-                remember_me = st.checkbox("✅ Beni Hatırla", value=False, key="login_remember_me")
+                remember_me = st.checkbox("Beni Hatırla", value=st.session_state.get('login_remember_me', False), key="login_remember_me")
 
                 # Butonlar alt alta (nested columns Azure'da desteklenmiyor)
                 login_submitted = st.form_submit_button("🚀 Giriş Yap", type="primary", use_container_width=True)
@@ -6316,6 +6387,12 @@ def show_login_page():
                         st.session_state['logged_in'] = True
                         st.session_state['user_email'] = email
                         
+                        # Eğer "Beni Hatırla" seçiliyse, bilgileri kaydet
+                        if st.session_state.get('login_remember_me', False):
+                            save_remembered_credentials(email, password)
+                        else:
+                            # Seçili değilse, kaydedilen bilgileri sil
+                            clear_remembered_credentials()
                         # Beni Hatırla - Checkbox'ı işaretliyse, credentials'ı kaydet
                         if st.session_state.get('login_remember_me', False):
                             save_remembered_credentials(email, password)
@@ -6366,11 +6443,18 @@ def show_login_page():
         .stTextInput label, .stTextInput label p, .stTextInput label span {
             color: #ffffff !important;
         }
+        
+        /* Email alanını 1/8 oranında küçült ama içindeki metni büyült */
+        div[data-testid="stTextInput"] input[type="text"] {
+            font-size: 14px !important;
+            padding: 8px 12px !important;
+            min-height: 32px !important;
+        }
         </style>
         """, unsafe_allow_html=True)
 
-        # Kayıt formu - email alanı 1/5 genişlikte
-        email_col, _ = st.columns([1, 4])
+        # Kayıt formu - email alanı (1/8 oranında küçük sütun)
+        email_col, _ = st.columns([1, 7])
         with email_col:
             new_email = st.text_input("📧 Email:", key="register_email")
 
@@ -6505,16 +6589,21 @@ def show_login_page():
                     if new_email:
                         # E-posta format kontrolü
                         if "@" in new_email and "." in new_email.split("@")[1]:
-                            verification_code = generate_verification_code()
-                            # Kodu session state'e kaydet
-                            store_verification_code(new_email, verification_code)
-                            # Email göndermeyi dene
-                            success, message = send_verification_email(new_email, verification_code)
-                            # Kod gönderildi olarak işaretle
-                            st.session_state[f"code_sent_{new_email}"] = True
-                            # Cooldown zamanını kaydet
-                            st.session_state[f"email_cooldown_{new_email}"] = datetime.now()
-                            st.rerun()
+                            # Email zaten kayıtlı mı kontrol et
+                            users = load_users()
+                            if new_email.lower() in [e.lower() for e in users.keys()]:
+                                st.error("❌ Bu e-posta adresi zaten kayıtlı! Lütfen giriş yapın veya farklı bir e-posta kullanın.")
+                            else:
+                                verification_code = generate_verification_code()
+                                # Kodu session state'e kaydet
+                                store_verification_code(new_email, verification_code)
+                                # Email göndermeyi dene
+                                success, message = send_verification_email(new_email, verification_code)
+                                # Kod gönderildi olarak işaretle
+                                st.session_state[f"code_sent_{new_email}"] = True
+                                # Cooldown zamanını kaydet
+                                st.session_state[f"email_cooldown_{new_email}"] = datetime.now()
+                                st.rerun()
                         else:
                             st.error("❌ Geçerli bir e-posta adresi girin!")
                     else:
@@ -6552,129 +6641,159 @@ def show_login_page():
                             else:
                                 st.error(f"❌ {message}")
 
-                    # Yeni Kod Gönder için cooldown kontrolü
-                    resend_cooldown_key = f"email_cooldown_{new_email}"
-                    resend_last_sent = st.session_state.get(resend_cooldown_key, None)
-                    resend_cooldown_remaining = 0
-                    
-                    if resend_last_sent:
-                        resend_elapsed = (datetime.now() - resend_last_sent).total_seconds()
-                        if resend_elapsed < 30:
-                            resend_cooldown_remaining = int(30 - resend_elapsed)
-                    
-                    resend_disabled = resend_cooldown_remaining > 0
-                    resend_label = f"⏳ Bekleyin ({resend_cooldown_remaining}s)" if resend_disabled else "🔄 Yeni Kod Gönder"
-                    
-                    if st.button(resend_label, key="resend_code", disabled=resend_disabled):
-                        verification_code = generate_verification_code()
-                        store_verification_code(new_email, verification_code)
-                        success, message = send_verification_email(new_email, verification_code)
-                        # Cooldown zamanını güncelle
-                        st.session_state[f"email_cooldown_{new_email}"] = datetime.now()
-                        st.rerun()
-
             else:
                 st.success("✅ E-posta adresiniz doğrulandı!")
 
         # Şifre alanları (sadece e-posta doğrulandığında göster)
         if email_verified:
             
-            # Şifre alanları
-            st.info("🔐 **Güçlü Şifre Oluşturun:** En az 8 karakter, 1 rakam ve 1 özel karakter (!@#$%&*) içermelidir.")
-            new_password = st.text_input("🔒 Şifre:", type="password", key="register_password")
-            confirm_password = st.text_input("🔒 Şifre Tekrar:", type="password", key="confirm_password")
-            
-            # Hata mesajları için placeholder oluştur
-            error_placeholder = st.empty()
-
-            if st.button("📝 Hesap Oluştur", type="primary", use_container_width=True, key="create_account_button"):
-                print(f"[DEBUG] Button clicked - name={new_name}, email={new_email}, pwd_len={len(new_password) if new_password else 0}, confirm_len={len(confirm_password) if confirm_password else 0}")
+            # Hesap başarıyla oluşturulduysa, button gösterme
+            if st.session_state.get('account_created_success', False):
+                # Başarılı kayıt mesajını göster ama button gösterme
+                st.success("✅ Hesabınız başarıyla oluşturuldu!")
+                st.info("🔑 Lütfen giriş yapma sekmesinde hesabınız ile giriş yapın.")
+            else:
+                # CSS - Şifre alanlarını ve butonunu küçült
+                st.markdown("""
+                <style>
+                /* Şifre alanlarını 5'de 1 oranında küçült */
+                div[data-testid="stTextInput"] input[type="password"] {
+                    font-size: 11.2px !important;  /* 14px * 0.8 */
+                    padding: 2.8px 6px !important;
+                    min-height: 28px !important;
+                }
                 
-                # Dökümanları kontrol et
-                all_docs_accepted = (st.session_state.get('doc_accepted_user_terms', False) and
-                                    st.session_state.get('doc_accepted_privacy', False) and
-                                    st.session_state.get('doc_accepted_cookie', False))
+                div[data-testid="stTextInput"] label {
+                    font-size: 11.2px !important;  /* 14px * 0.8 */
+                    margin-bottom: 4px !important;
+                }
                 
-                if not all_docs_accepted:
-                    with error_placeholder.container():
-                        st.error("❌ Lütfen tüm dökümanları okuyup onaylayın!")
-                elif new_email and new_password and confirm_password:
-                    if new_password == confirm_password:
-                        # Password policy: min 8 chars, at least one digit, at least one special char
-                        has_min_len = len(new_password) >= 8
-                        has_digit = any(ch.isdigit() for ch in new_password)
-                        has_special = any(not ch.isalnum() for ch in new_password)
-                        
-                        print(f"[DEBUG] Password checks - len={len(new_password)}, has_min_len={has_min_len}, has_digit={has_digit}, has_special={has_special}")
+                /* Hesap Oluştur butonunu küçült */
+                div[data-testid="stButton"] button[key="create_account_button"] {
+                    font-size: 10px !important;
+                    padding: 4px 8px !important;
+                    min-height: 24px !important;
+                }
+                </style>
+                """, unsafe_allow_html=True)
+                
+                # Şifre alanları
+                st.info("🔐 **Güçlü Şifre Oluşturun:** En az 8 karakter, 1 rakam ve 1 özel karakter (!@#$%&*) içermelidir.")
+                
+                # Şifre alanlarını 5'de 1 oranında küçültmek için kolona yerleştir
+                pwd_col, _ = st.columns([1, 4])
+                with pwd_col:
+                    new_password = st.text_input("🔒 Şifre:", type="password", key="register_password")
+                
+                confirm_col, _ = st.columns([1, 4])
+                with confirm_col:
+                    confirm_password = st.text_input("🔒 Şifre Tekrar:", type="password", key="confirm_password")
+                
+                # Hata mesajları için placeholder oluştur
+                error_placeholder = st.empty()
 
-                        if not has_min_len:
-                            with error_placeholder.container():
-                                st.error("❌ **Şifre Çok Kısa!**")
-                                st.info("💡 Şifreniz en az **8 karakter** uzunluğunda olmalıdır. Örnek: `Guvenli123!`")
-                        elif not has_digit:
-                            with error_placeholder.container():
-                                st.error("❌ **Şifrede Rakam Yok!**")
-                                st.info("💡 Şifreniz en az **bir rakam (0-9)** içermelidir. Örnek: `Guvenli123!`")
-                        elif not has_special:
-                            with error_placeholder.container():
-                                st.error("❌ **Şifrede Özel Karakter Yok!**")
-                                st.info("💡 Şifreniz en az **bir özel karakter** içermelidir (örn. `!@#$%&*`). Örnek: `Guvenli123!`")
-                        else:
-                            # Onaylanan dökümanları kaydet
-                            accepted_docs = {
-                                'user_terms': st.session_state.get('doc_accepted_user_terms', False),
-                                'privacy_policy': st.session_state.get('doc_accepted_privacy', False),
-                                'cookie_policy': st.session_state.get('doc_accepted_cookie', False),
-                                'accepted_at': datetime.now().isoformat()
-                            }
+                # Hesap Oluştur butonunu 1/8 oranında küçültmek için kolona yerleştir
+                btn_col, _ = st.columns([1, 7])
+                with btn_col:
+                    button_clicked = st.button("📝 Hesap Oluştur", type="primary", use_container_width=True, key="create_account_button")
+                
+                if button_clicked:
+                    print(f"[DEBUG] Button clicked - email={new_email}, pwd_len={len(new_password) if new_password else 0}, confirm_len={len(confirm_password) if confirm_password else 0}")
+                    
+                    # Dökümanları kontrol et
+                    all_docs_accepted = (st.session_state.get('doc_accepted_user_terms', False) and
+                                        st.session_state.get('doc_accepted_privacy', False) and
+                                        st.session_state.get('doc_accepted_cookie', False))
+                    
+                    if not all_docs_accepted:
+                        with error_placeholder.container():
+                            st.error("❌ Lütfen tüm dökümanları okuyup onaylayın!")
+                    elif not new_email or not new_password or not confirm_password:
+                        with error_placeholder.container():
+                            st.error("❌ Lütfen tüm alanları doldurun!")
+                    elif new_email and new_password and confirm_password:
+                        if new_password == confirm_password:
+                            # Password policy: min 8 chars, at least one digit, at least one special char
+                            has_min_len = len(new_password) >= 8
+                            has_digit = any(ch.isdigit() for ch in new_password)
+                            has_special = any(not ch.isalnum() for ch in new_password)
                             
-                            success, message = register_user(new_email, new_password, new_name, accepted_docs)
-                            print(f"[REGISTER RESULT] email={new_email}, success={success}, message={message}")
-                            if success:
-                                # Yeni kullanıcıya 1 aylık ücretsiz deneme aboneliği tanımla
-                                try:
-                                    subscriptions = load_subscriptions()
-                                    start_date = datetime.now()
-                                    end_date = start_date + timedelta(days=TRIAL_PERIOD_DAYS)
-                                    subscriptions[new_email.lower()] = {
-                                        "plan": "trial",
-                                        "plan_name": "Deneme (Ücretsiz)",
-                                        "start_date": start_date.strftime("%Y-%m-%d"),
-                                        "end_date": end_date.strftime("%Y-%m-%d"),
-                                        "status": "active",
-                                        "is_trial": True,
-                                        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                        "created_by": "system_auto_trial"
-                                    }
-                                    save_subscriptions(subscriptions)
-                                    print(f"[TRIAL SUBSCRIPTION] 30 gün deneme tanımlandı: {new_email}")
-                                except Exception as e:
-                                    print(f"[TRIAL ERROR] Deneme aboneliği tanımlanamadı: {e}")
-                                
+                            print(f"[DEBUG] Password checks - len={len(new_password)}, has_min_len={has_min_len}, has_digit={has_digit}, has_special={has_special}")
+
+                            if not has_min_len:
                                 with error_placeholder.container():
-                                    st.success("✅ Hesabınız başarıyla oluşturuldu!")
-                                    st.info("🔑 Lütfen giriş yapma sekmesinde hesabınız ile giriş yapın.")
-                                
-                                # Temizlik
-                                st.session_state.pop(f"email_verified_{new_email}", None)
-                                if f"code_sent_{new_email}" in st.session_state:
-                                    st.session_state.pop(f"code_sent_{new_email}")
-                                # Döküman onay state'lerini temizle
-                                st.session_state.pop('doc_accepted_user_terms', None)
-                                st.session_state.pop('doc_accepted_privacy', None)
-                                st.session_state.pop('doc_accepted_cookie', None)
-                                
-                                # Giriş yap sekmesine yönlendirme flag'i
-                                st.session_state['redirect_to_login'] = True
+                                    st.error("❌ **Şifre Çok Kısa!**")
+                                    st.info("💡 Şifreniz en az **8 karakter** uzunluğunda olmalıdır. Örnek: `Guvenli123!`")
+                            elif not has_digit:
+                                with error_placeholder.container():
+                                    st.error("❌ **Şifrede Rakam Yok!**")
+                                    st.info("💡 Şifreniz en az **bir rakam (0-9)** içermelidir. Örnek: `Guvenli123!`")
+                            elif not has_special:
+                                with error_placeholder.container():
+                                    st.error("❌ **Şifrede Özel Karakter Yok!**")
+                                    st.info("💡 Şifreniz en az **bir özel karakter** içermelidir (örn. `!@#$%&*`). Örnek: `Guvenli123!`")
                             else:
-                                with error_placeholder.container():
-                                    st.error(f"❌ {message}")
+                                # Onaylanan dökümanları kaydet
+                                accepted_docs = {
+                                    'user_terms': st.session_state.get('doc_accepted_user_terms', False),
+                                    'privacy_policy': st.session_state.get('doc_accepted_privacy', False),
+                                    'cookie_policy': st.session_state.get('doc_accepted_cookie', False),
+                                    'accepted_at': datetime.now().isoformat()
+                                }
+                                
+                                success, message = register_user(new_email, new_password, "", accepted_docs)
+                                print(f"[REGISTER RESULT] email={new_email}, success={success}, message={message}")
+                                if success:
+                                    # Yeni kullanıcıya 1 aylık ücretsiz deneme aboneliği tanımla
+                                    try:
+                                        subscriptions = load_subscriptions()
+                                        start_date = datetime.now()
+                                        end_date = start_date + timedelta(days=TRIAL_PERIOD_DAYS)
+                                        subscriptions[new_email.lower()] = {
+                                            "plan": "trial",
+                                            "plan_name": "Deneme (Ücretsiz)",
+                                            "start_date": start_date.strftime("%Y-%m-%d"),
+                                            "end_date": end_date.strftime("%Y-%m-%d"),
+                                            "status": "active",
+                                            "is_trial": True,
+                                            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                            "created_by": "system_auto_trial"
+                                        }
+                                        save_subscriptions(subscriptions)
+                                        print(f"[TRIAL SUBSCRIPTION] 30 gün deneme tanımlandı: {new_email}")
+                                    except Exception as e:
+                                        print(f"[TRIAL ERROR] Deneme aboneliği tanımlanamadı: {e}")
+                                    
+                                    with error_placeholder.container():
+                                        st.success("✅ Hesabınız başarıyla oluşturuldu!")
+                                        st.info("🔑 Lütfen giriş yapma sekmesinde hesabınız ile giriş yapın.")
+                                    
+                                    # Button'u gizle
+                                    st.session_state['account_created_success'] = True
+                                    
+                                    # Temizlik
+                                    st.session_state.pop(f"email_verified_{new_email}", None)
+                                    if f"code_sent_{new_email}" in st.session_state:
+                                        st.session_state.pop(f"code_sent_{new_email}")
+                                    # Döküman onay state'lerini temizle
+                                    st.session_state.pop('doc_accepted_user_terms', None)
+                                    st.session_state.pop('doc_accepted_privacy', None)
+                                    st.session_state.pop('doc_accepted_cookie', None)
+                                    
+                                    # Giriş yap sekmesine yönlendirme flag'i
+                                    st.session_state['redirect_to_login'] = True
+                                    
+                                    # Sayfayı yenile - button kaldırılsın
+                                    st.rerun()
+                                else:
+                                    with error_placeholder.container():
+                                        st.error(f"❌ {message}")
+                        else:
+                            with error_placeholder.container():
+                                st.error("❌ Şifreler eşleşmiyor!")
                     else:
                         with error_placeholder.container():
-                            st.error("❌ Şifreler eşleşmiyor!")
-                else:
-                    with error_placeholder.container():
-                        st.error("❌ Lütfen tüm alanları doldurun!")
+                            st.error("❌ Lütfen tüm alanları doldurun!")
     
     elif selected_tab == "🔄 Şifre Sıfırla":
         show_password_reset_form()
@@ -7791,7 +7910,236 @@ def show_data_management():
 
 def show_portfolio_management():
     """Portföy yönetimi sekmesini göster"""
-    # Modern CSS stilleri
+    # Modern sidebar CSS stilleri - Portföy yönetimi için (Piyasa Analizi ile hizalandı)
+    st.sidebar.markdown("""
+    <style>
+    /* Modern section başlıkları - karanlık temaya uyum */
+    .section-header {
+        background: linear-gradient(135deg, rgba(30, 41, 59, 0.85) 0%, rgba(15, 23, 42, 0.92) 100%);
+        color: var(--text-primary);
+        padding: 12px 16px;
+        border-radius: 12px;
+        font-size: 13px;
+        font-weight: 600;
+        margin: 20px 0 14px 0;
+        border-left: 4px solid rgba(37, 99, 235, 0.7);
+        box-shadow: 0 14px 24px rgba(8, 13, 24, 0.45);
+    }
+
+    /* Modern multiselect ve selectbox stilleri */
+    div[data-testid="stMultiSelect"],
+    div[data-testid="stSelectbox"] {
+        background: linear-gradient(135deg, rgba(16, 24, 40, 0.96) 0%, rgba(12, 19, 33, 0.88) 100%);
+        border-radius: 18px;
+        padding: 8px 10px 10px 10px;
+        border: 1px solid rgba(59, 130, 246, 0.28);
+        box-shadow: 0 22px 44px rgba(6, 11, 22, 0.55);
+        margin-bottom: 8px;
+    }
+
+    div[data-testid="stMultiSelect"] > label,
+    div[data-testid="stSelectbox"] > label {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        background: linear-gradient(135deg, rgba(37, 99, 235, 0.58) 0%, rgba(29, 78, 216, 0.48) 100%);
+        border-radius: 10px;
+        padding: 6px 10px;
+        font-weight: 600;
+        font-size: 12px;
+        color: #f8fafc;
+        margin-bottom: 8px;
+        box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.18);
+        letter-spacing: 0.01em;
+    }
+
+    div[data-testid="stMultiSelect"] > label p,
+    div[data-testid="stSelectbox"] > label p {
+        color: #f8fafc !important;
+        margin: 0 !important;
+    }
+
+    /* Kategori seçimi değer metnini görünür tut */
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] > div:first-child {
+        display: flex !important;
+        align-items: center !important;
+        min-height: 48px !important;
+    }
+
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] > div:first-child span,
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] > div:first-child p {
+        color: #f8fafc !important;
+        font-weight: 600 !important;
+        font-size: 14px !important;
+        letter-spacing: 0.01em !important;
+    }
+
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] > div:first-child input {
+        color: #f8fafc !important;
+    }
+    
+    /* Multiselect input alanı - placeholder ve metin okunabilirliği */
+    div[data-testid="stMultiSelect"] input {
+        color: #ffffff !important;
+        font-size: 14px !important;
+        font-weight: 500 !important;
+    }
+    
+    div[data-testid="stMultiSelect"] input::placeholder {
+        color: #d1d5db !important;
+        opacity: 0.9 !important;
+    }
+    
+    /* Seçili öğeler (tags) */
+    div[data-testid="stMultiSelect"] span[data-baseweb="tag"] {
+        background: rgba(37, 99, 235, 0.8) !important;
+        color: #ffffff !important;
+        font-weight: 600 !important;
+        font-size: 13px !important;
+        padding: 4px 8px !important;
+        border-radius: 6px !important;
+    }
+    
+    div[data-testid="stMultiSelect"] ul {
+        max-height: 280px;
+        background-color: rgba(13, 20, 34, 0.96);
+        border-radius: 10px;
+        color: var(--text-primary);
+    }
+    /* Force closed multiselect/select control to be dark and show muted placeholder */
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] > div:first-child,
+    div[data-testid="stMultiSelect"] div[data-baseweb="select"] > div:first-child,
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] > div:nth-child(1),
+    div[data-testid="stMultiSelect"] div[data-baseweb="select"] > div:nth-child(1) {
+        background: rgba(15, 23, 42, 0.92) !important;
+        color: var(--text-primary) !important;
+        border: 1px solid rgba(59, 130, 246, 0.18) !important;
+        border-radius: 10px !important;
+        padding: 10px 12px !important;
+        box-shadow: none !important;
+    }
+
+    /* Placeholder text inside the closed select control */
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] > div:first-child span,
+    div[data-testid="stMultiSelect"] div[data-baseweb="select"] > div:first-child span,
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] > div:first-child input::placeholder,
+    div[data-testid="stMultiSelect"] div[data-baseweb="select"] > div:first-child input::placeholder {
+        color: #cbd5e1 !important; /* muted light */
+        opacity: 0.95 !important;
+    }
+
+    /* Ensure selected text uses readable font like Enstrüman selection */
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] > div:first-child,
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] > div:first-child span,
+    div[data-testid="stSelectbox"] > div,
+    div[data-testid="stSelectbox"] div {
+        font-size: 14px !important;
+        font-weight: 500 !important;
+        line-height: 1.4 !important;
+        color: var(--text-primary) !important;
+    }
+
+    /* Stronger, sidebar-specific selector to ensure Kategori Select matches Enstrüman Seçimi */
+    [data-testid="stSidebar"] div[data-testid="stSelectbox"] div[data-baseweb="select"] > div:first-child,
+    [data-testid="stSidebar"] div[data-testid="stSelectbox"] div[data-baseweb="select"] > div:nth-child(1) {
+        background: linear-gradient(135deg, rgba(30,41,59,0.85) 0%, rgba(15,23,42,0.92) 100%) !important;
+        border: 1px solid rgba(59, 130, 246, 0.18) !important;
+        box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.45) !important;
+        border-radius: 12px !important;
+        padding: 12px 14px !important;
+        font-size: 14px !important;
+        font-weight: 600 !important;
+        color: var(--text-primary) !important;
+    }
+
+    /* Sidebar placeholder/selected text clarity */
+    [data-testid="stSidebar"] div[data-testid="stSelectbox"] div[data-baseweb="select"] > div:first-child span,
+    [data-testid="stSidebar"] div[data-testid="stSelectbox"] div[data-baseweb="select"] > div:first-child input::placeholder {
+        color: #e2e8f0 !important;
+        opacity: 0.95 !important;
+    }
+
+    /* Sidebar chevron color */
+    [data-testid="stSidebar"] div[data-testid="stSelectbox"] div[data-baseweb="select"] svg {
+        fill: #e2e8f0 !important;
+        color: #e2e8f0 !important;
+        opacity: 0.95 !important;
+    }
+
+    /* Ensure the dropdown chevron is visible and muted */
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] svg,
+    div[data-testid="stMultiSelect"] div[data-baseweb="select"] svg {
+        fill: #cbd5e1 !important;
+        color: #cbd5e1 !important;
+        opacity: 0.95 !important;
+    }
+    div[data-testid="stSelectbox"] div {
+        color: var(--text-primary);
+        font-weight: 500;
+        font-size: 14px;
+    }
+
+    /* Modern input stilleri */
+    div[data-testid="stTextInput"] > div > div > input,
+    div[data-testid="stNumberInput"] input {
+        background: rgba(13, 20, 34, 0.92);
+        border: 1px solid rgba(59, 130, 246, 0.3);
+        border-radius: 12px;
+        padding: 12px;
+        font-size: 13px;
+        transition: all 0.3s ease;
+        color: var(--text-primary);
+    }
+    div[data-testid="stTextInput"] > div > div > input:focus,
+    div[data-testid="stNumberInput"] input:focus {
+        border-color: rgba(37, 99, 235, 0.6);
+        box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.45);
+    }
+
+    /* Modern date input stilleri */
+    div[data-testid="stDateInput"] > div > div > input {
+        background: rgba(13, 20, 34, 0.92);
+        border: 1px solid rgba(37, 99, 235, 0.35);
+        border-radius: 12px;
+        padding: 10px 12px;
+        color: var(--text-primary);
+        font-size: 13px;
+    }
+
+    /* Modern buton stilleri */
+    div[data-testid="stButton"] > button {
+        background: linear-gradient(135deg, rgba(37, 99, 235, 0.95) 0%, rgba(29, 78, 216, 0.95) 100%);
+        color: #f8fafc;
+        border: 1px solid rgba(59, 130, 246, 0.55);
+        border-radius: 18px;
+        padding: 12px 22px;
+        font-weight: 600;
+        font-size: 14px;
+        transition: all 0.3s ease;
+        box-shadow: 0 16px 30px rgba(15, 23, 42, 0.5);
+    }
+    div[data-testid="stButton"] > button:hover {
+        transform: translateY(-2px) scale(1.01);
+        box-shadow: 0 22px 36px rgba(37, 99, 235, 0.32);
+        border-color: rgba(148, 163, 184, 0.3);
+    }
+
+    /* Primary buton özel stili */
+    div[data-testid="stButton"] > button[kind="primary"] {
+        background: linear-gradient(135deg, #22d3ee 0%, #0ea5e9 100%);
+        color: #041120;
+        box-shadow: 0 20px 30px rgba(14, 165, 233, 0.4);
+        font-weight: 700;
+    }
+    div[data-testid="stButton"] > button[kind="primary"]:hover {
+        background: linear-gradient(135deg, #06b6d4 0%, #0ea5e9 100%);
+        box-shadow: 0 26px 36px rgba(14, 165, 233, 0.45);
+        transform: translateY(-3px) scale(1.02);
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    # Modern CSS stilleri (ana içerik alanı için)
     st.markdown("""
     <style>
     .modern-header {
@@ -7886,8 +8234,21 @@ def show_portfolio_management():
 
 def show_sidebar_bottom_buttons_portfolio():
     """Portföy sayfaları için sidebar alt butonları"""
+    # CSS stileri - Şikayet & Öneri ve Hesap Ayarları butonlarını küçült ve aşağıya taşı
+    st.sidebar.markdown("""
+    <style>
+    /* Sidebar buton stillerini özel hale getir - daha küçük font ve daha aşağıya */
+    [data-testid="stSidebar"] button[key*="feedback_portfolio"],
+    [data-testid="stSidebar"] button[key*="settings_portfolio"] {
+        font-size: 10.5px !important;  /* 14px -> 10.5px (%75 küçültü) */
+        padding: 8px 10px !important;  /* Daha kompakt padding */
+        margin: 20px 0 !important;  /* Daha aşağıya */
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
     # Sidebar'da Şikayet & Öneri ve Ayarlar butonları
-    st.sidebar.markdown('<hr style="margin: 60px 0; border-color: rgba(59, 130, 246, 0.2);">', unsafe_allow_html=True)
+    st.sidebar.markdown('<hr style="margin: 300px 0 40px 0; border-color: rgba(59, 130, 246, 0.2);">', unsafe_allow_html=True)
     
     # Session state for sidebar sections
     if 'show_feedback_portfolio' not in st.session_state:
@@ -11005,8 +11366,21 @@ def show_market_analysis():
             except Exception as e:
                 st.error(f"❌ Genel bir hata oluştu: {str(e)}")
 
+    # CSS stileri - Şikayet & Öneri ve Hesap Ayarları butonlarını küçült ve aşağıya taşı
+    st.sidebar.markdown("""
+    <style>
+    /* Sidebar buton stillerini özel hale getir - daha küçük font ve daha aşağıya */
+    [data-testid="stSidebar"] button[key*="feedback_market"],
+    [data-testid="stSidebar"] button[key*="settings_market"] {
+        font-size: 10.5px !important;  /* 14px -> 10.5px (%75 küçültü) */
+        padding: 8px 10px !important;  /* Daha kompakt padding */
+        margin: 20px 0 !important;  /* Daha aşağıya */
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
     # Sidebar'da Şikayet & Öneri ve Ayarlar butonları
-    st.sidebar.markdown('<hr style="margin: 20px 0; border-color: rgba(59, 130, 246, 0.2);">', unsafe_allow_html=True)
+    st.sidebar.markdown('<hr style="margin: 300px 0 40px 0; border-color: rgba(59, 130, 246, 0.2);">', unsafe_allow_html=True)
     
     # Session state for sidebar sections
     if 'show_feedback_market' not in st.session_state:
