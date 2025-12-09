@@ -1,11 +1,12 @@
 streamlit>=1.40.0
 yfinance>=0.2.32
 curl_cffi
-pandas==2.1.0
+pandas>=2.1.0
 plotly==5.17.0
 xlsxwriter==3.1.9
 requests==2.31.0
 openpyxl==3.1.2
+numpy>=1.24.0
 datetime
 tefasfon==0.1.0
 pyarrow==14.0.0
