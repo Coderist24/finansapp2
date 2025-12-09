@@ -269,9 +269,10 @@ import sys
 
 # Cookie manager for Remember Me functionality
 try:
-    from streamlit_cookies_manager import EncryptedCookieManager
+    import extra_streamlit_components as stx
     COOKIES_AVAILABLE = True
 except ImportError:
+    stx = None
     COOKIES_AVAILABLE = False
 
 # Load environment variables
@@ -496,17 +497,14 @@ st.set_page_config(
     layout="wide"
 )
 
-# 🔐 Cookie Manager for Remember Me (cache kullanılamaz - widget içeriyor)
-cookies = None
-if COOKIES_AVAILABLE:
-    try:
-        cookies = EncryptedCookieManager(
-            prefix="finapp_",
-            password="super_secret_cookie_password_12345"  # Production'da env variable kullan
-        )
-    except Exception as e:
-        st.warning(f"Cookie manager başlatılamadı: {e}")
-        cookies = None
+# 🔐 Cookie Manager for Remember Me (extra-streamlit-components kullanıyor)
+def get_cookie_manager():
+    """Cookie manager - Azure'da da çalışır"""
+    if COOKIES_AVAILABLE and stx:
+        return stx.CookieManager()
+    return None
+
+cookie_manager = get_cookie_manager()
 
 
 def inject_dark_theme():
@@ -2260,10 +2258,10 @@ def get_user_id_from_email(email):
     return hashlib.sha256(email.lower().encode()).hexdigest()[:16]
 
 def load_persistent_logins():
-    """Persistent login kayıtlarını cookie'den yükle (artık Azure kullanmıyor)"""
+    """Persistent login kayıtlarını cookie'den yükle"""
     try:
-        if COOKIES_AVAILABLE and cookies is not None and cookies.ready():
-            logins_json = cookies.get("persistent_logins", "")
+        if COOKIES_AVAILABLE and cookie_manager is not None:
+            logins_json = cookie_manager.get("finapp_persistent_logins")
             if logins_json:
                 import base64
                 decoded = base64.b64decode(logins_json.encode()).decode('utf-8')
@@ -2273,14 +2271,13 @@ def load_persistent_logins():
     return {}
 
 def save_persistent_logins(logins):
-    """Persistent login kayıtlarını cookie'ye hazırla (save ayrı yapılacak)"""
+    """Persistent login kayıtlarını cookie'ye kaydet"""
     try:
-        if COOKIES_AVAILABLE and cookies is not None and cookies.ready():
+        if COOKIES_AVAILABLE and cookie_manager is not None:
             import base64
             json_data = json.dumps(logins, ensure_ascii=False)
             encoded = base64.b64encode(json_data.encode('utf-8')).decode()
-            cookies["persistent_logins"] = encoded
-            # NOT: cookies.save() burada çağrılmıyor - çağıran kod tek seferde save yapacak
+            cookie_manager.set("finapp_persistent_logins", encoded, expires_at=datetime.now() + timedelta(days=30), key="set_logins_save")
             return True
     except Exception as e:
         print(f"[REMEMBER ME] Save hatası: {e}")
@@ -6230,13 +6227,15 @@ def show_subscription_expired_page():
                 revoke_remember_me_token(user_email, user_id, series_id=None)
             
             # Cookie'leri temizle
-            if COOKIES_AVAILABLE and cookies is not None:
-                cookies["remember_token"] = ""
-                cookies["remembered_email"] = ""
-                cookies["persistent_logins"] = ""
-                cookies.save()
+            if COOKIES_AVAILABLE and cookie_manager is not None:
+                cookie_manager.delete("finapp_remember_token", key="del_token_1")
+                cookie_manager.delete("finapp_remembered_email", key="del_email_1")
+                cookie_manager.delete("finapp_persistent_logins", key="del_logins_1")
             
             clear_remembered_credentials()
+            # Session state'i temizle ve logout flag'i ayarla
+            st.session_state['just_logged_out'] = True
+            st.session_state['remembered_email'] = ""
             for key in ['logged_in', 'user_email', 'user_name']:
                 if key in st.session_state:
                     del st.session_state[key]
@@ -6251,12 +6250,11 @@ def show_subscription_expired_page():
             
             clear_remembered_credentials()
             # Cookie manager ile sil
-            if COOKIES_AVAILABLE and cookies is not None:
+            if COOKIES_AVAILABLE and cookie_manager is not None:
                 try:
-                    cookies["remember_token"] = ""
-                    cookies["remembered_email"] = ""
-                    cookies["persistent_logins"] = ""
-                    cookies.save()
+                    cookie_manager.delete("finapp_remember_token", key="del_token_2")
+                    cookie_manager.delete("finapp_remembered_email", key="del_email_2")
+                    cookie_manager.delete("finapp_persistent_logins", key="del_logins_2")
                 except Exception as e:
                     st.warning(f"Cookie temizleme hatası: {e}")
             st.success("✅ Kaydedilen bilgiler ve tüm oturum token'ları silindi!")
@@ -6635,13 +6633,21 @@ def show_login_page():
     
     # Seçilen tab'a göre içerik göster
     if selected_tab == "🔑 Giriş Yap":
-        # 🔐 Cookie Manager ile Remember Me
-        if COOKIES_AVAILABLE and cookies is not None:
-            if not cookies.ready():
-                st.stop()  # Cookie manager hazır olana kadar bekle
-            
+        # 🔐 Cookie Manager ile Remember Me (extra-streamlit-components)
+        # Logout sonrası auto-login'i atla
+        if st.session_state.get('just_logged_out', False):
+            st.session_state['just_logged_out'] = False
+            # Cookie'leri tekrar temizle (async silme tamamlanmamış olabilir)
+            if COOKIES_AVAILABLE and cookie_manager is not None:
+                try:
+                    cookie_manager.delete("finapp_remember_token", key="del_token_final")
+                    cookie_manager.delete("finapp_remembered_email", key="del_email_final")
+                    cookie_manager.delete("finapp_persistent_logins", key="del_logins_final")
+                except:
+                    pass
+        elif COOKIES_AVAILABLE and cookie_manager is not None:
             # Cookie'den token kontrol et
-            remember_token = cookies.get("remember_token")
+            remember_token = cookie_manager.get("finapp_remember_token")
             
             if remember_token and not st.session_state.get('logged_in', False):
                 # Token'ı doğrula
@@ -6654,12 +6660,10 @@ def show_login_page():
                     st.session_state['user_email'] = email
                     st.session_state['remembered_email'] = email
                     
-                    # Yeni token'ı kaydet (rotation) - tek save
+                    # Yeni token'ı kaydet (rotation)
                     if new_token:
-                        cookies["remember_token"] = new_token
-                        cookies["remembered_email"] = email
-                        # persistent_logins zaten validate_and_rotate_token içinde güncellendi
-                        cookies.save()
+                        cookie_manager.set("finapp_remember_token", new_token, expires_at=datetime.now() + timedelta(days=30), key="set_token_rotate")
+                        cookie_manager.set("finapp_remembered_email", email, expires_at=datetime.now() + timedelta(days=30), key="set_email_rotate")
                     
                     if warning:
                         st.warning(f"⚠️ {warning}")
@@ -6675,19 +6679,13 @@ def show_login_page():
                     st.success("✅ Otomatik giriş başarılı!")
                     st.rerun()
                 else:
-                    # Token geçersiz - sadece değerleri sıfırla, save yapma (bir sonraki login'de yapılacak)
-                    cookies["remember_token"] = ""
-                    cookies["remembered_email"] = ""
-                    cookies["persistent_logins"] = ""
-                    # NOT: Burada save yapmıyoruz - duplicate key hatası önlemek için
-                    # Değerler memory'de sıfırlanır, kullanıcı tekrar giriş yapınca save edilir
-                    if warning:
-                        st.info(f"ℹ️ {warning}")
+                    # Token geçersiz - session state'den temizle
+                    st.session_state['remembered_email'] = ""
         
         # Kaydedilen email'i yükle
         if 'remembered_email' not in st.session_state:
-            if COOKIES_AVAILABLE and cookies is not None:
-                st.session_state['remembered_email'] = cookies.get("remembered_email", "")
+            if COOKIES_AVAILABLE and cookie_manager is not None:
+                st.session_state['remembered_email'] = cookie_manager.get("finapp_remembered_email") or ""
             else:
                 st.session_state['remembered_email'] = ""
         
@@ -6732,7 +6730,7 @@ def show_login_page():
                             ip_address, user_agent = get_client_info()
                             cookie_value = create_remember_me_token(email, ip_address, user_agent)
                             
-                            if cookie_value and COOKIES_AVAILABLE and cookies is not None:
+                            if cookie_value and COOKIES_AVAILABLE and cookie_manager is not None:
                                 # Pending login data'yı cookie'ye kaydet
                                 pending = st.session_state.get('pending_login_data')
                                 if pending:
@@ -6741,7 +6739,7 @@ def show_login_page():
                                     login_entry = pending['login_entry']
                                     
                                     # Mevcut logins'i yükle veya boş dict
-                                    logins_json = cookies.get("persistent_logins", "")
+                                    logins_json = cookie_manager.get("finapp_persistent_logins")
                                     if logins_json:
                                         try:
                                             logins = json.loads(base64.b64decode(logins_json.encode()).decode('utf-8'))
@@ -6755,12 +6753,12 @@ def show_login_page():
                                         logins[user_id] = []
                                     logins[user_id] = [login_entry]  # Tek kayıt tut (eski kayıtları sil)
                                     
-                                    # Her şeyi tek seferde kaydet
+                                    # Cookie'lere kaydet (extra-streamlit-components API)
                                     encoded_logins = base64.b64encode(json.dumps(logins).encode('utf-8')).decode()
-                                    cookies["persistent_logins"] = encoded_logins
-                                    cookies["remember_token"] = cookie_value
-                                    cookies["remembered_email"] = email
-                                    cookies.save()
+                                    expires = datetime.now() + timedelta(days=30)
+                                    cookie_manager.set("finapp_persistent_logins", encoded_logins, expires_at=expires, key="set_logins_login")
+                                    cookie_manager.set("finapp_remember_token", cookie_value, expires_at=expires, key="set_token_login")
+                                    cookie_manager.set("finapp_remembered_email", email, expires_at=expires, key="set_email_login")
                                     
                                     del st.session_state['pending_login_data']
                                 
@@ -6768,11 +6766,10 @@ def show_login_page():
                                 save_remembered_credentials(email, "")
                         else:
                             # Seçili değilse, cookie'leri sil
-                            if COOKIES_AVAILABLE and cookies is not None:
-                                cookies["remember_token"] = ""
-                                cookies["remembered_email"] = ""
-                                cookies["persistent_logins"] = ""
-                                cookies.save()
+                            if COOKIES_AVAILABLE and cookie_manager is not None:
+                                cookie_manager.delete("finapp_remember_token", key="del_token_3")
+                                cookie_manager.delete("finapp_remembered_email", key="del_email_3")
+                                cookie_manager.delete("finapp_persistent_logins", key="del_logins_3")
                             clear_remembered_credentials()
                         
                         # Kullanıcı değiştiğinde önceki portföy önbelleğini ve ilgili state'leri temizle
@@ -8069,14 +8066,16 @@ def show_main_app():
             # Çıkış sırasında "Beni Hatırla" verilerini temizle
             clear_remembered_credentials()
             # Cookie manager ile sil
-            if COOKIES_AVAILABLE and cookies is not None:
+            if COOKIES_AVAILABLE and cookie_manager is not None:
                 try:
-                    cookies["remember_token"] = ""
-                    cookies["remembered_email"] = ""
-                    cookies["persistent_logins"] = ""
-                    cookies.save()
+                    cookie_manager.delete("finapp_remember_token", key="del_token_4")
+                    cookie_manager.delete("finapp_remembered_email", key="del_email_4")
+                    cookie_manager.delete("finapp_persistent_logins", key="del_logins_4")
                 except Exception as e:
                     pass  # Çıkış sırasında hata gösterme
+            # Logout flag'i ayarla (auto-login'i önlemek için)
+            st.session_state['just_logged_out'] = True
+            st.session_state['remembered_email'] = ""
             # Oturum ve kullanıcı bilgilerini temizle
             for key in ['logged_in', 'user_email', 'user_name']:
                 if key in st.session_state:
