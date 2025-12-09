@@ -6,10 +6,10 @@ plotly==5.17.0
 xlsxwriter==3.1.9
 requests==2.31.0
 openpyxl==3.1.2
-numpy>=1.24.0
+numpy<2,>=1.24.0
 datetime
 tefasfon==0.1.0
-pyarrow==14.0.0
+pyarrow<15,>=14.0.0
 fastparquet==0.8.3
 azure-storage-blob==12.19.0
 azure-identity==1.15.0
