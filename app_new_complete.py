@@ -267,6 +267,13 @@ import logging
 import warnings
 import sys
 
+# Cookie manager for Remember Me functionality
+try:
+    from streamlit_cookies_manager import EncryptedCookieManager
+    COOKIES_AVAILABLE = True
+except ImportError:
+    COOKIES_AVAILABLE = False
+
 # Load environment variables
 load_dotenv()
 
@@ -488,6 +495,18 @@ st.set_page_config(
     page_icon="📊",
     layout="wide"
 )
+
+# 🔐 Cookie Manager for Remember Me (cache kullanılamaz - widget içeriyor)
+cookies = None
+if COOKIES_AVAILABLE:
+    try:
+        cookies = EncryptedCookieManager(
+            prefix="finapp_",
+            password="super_secret_cookie_password_12345"  # Production'da env variable kullan
+        )
+    except Exception as e:
+        st.warning(f"Cookie manager başlatılamadı: {e}")
+        cookies = None
 
 
 def inject_dark_theme():
@@ -2210,58 +2229,300 @@ def hash_password(password):
     """Şifreyi güvenli bir şekilde hash'le"""
     return hashlib.sha256(password.encode()).hexdigest()
 
-# Beni Hatırla (Remember Me) Fonksiyonları
-REMEMBER_ME_FILE = "remember_me.json"
+# ============================================
+# 🔐 GÜVENLİ "BENİ HATIRLA" (REMEMBER ME) SİSTEMİ
+# ============================================
+# Token-based authentication with rotation
+# - Cookie'de ŞİFRE SAKLANMAZ, sadece token
+# - Token her login'de rotate edilir
+# - Token çalınma tespiti yapılır
+# - Azure Blob Storage'da persistent_logins.json tutulur
 
-def save_remembered_credentials(email, password):
-    """Email ve şifreyi hatırla JSON dosyasına kaydet"""
+PERSISTENT_LOGINS_FILE = "persistent_logins.json"
+REMEMBER_ME_COOKIE_MAX_AGE = 30 * 24 * 60 * 60  # 30 gün (saniye)
+
+def generate_secure_token(length=32):
+    """256-bit (32 byte) kriptografik olarak güvenli rastgele token üret"""
+    import secrets
+    return secrets.token_hex(length)
+
+def generate_series_id():
+    """128-bit (16 byte) series ID üret - kullanıcı için sabit kalır"""
+    import secrets
+    return secrets.token_hex(16)
+
+def hash_token(token):
+    """Token'ı SHA-256 ile hashle (DB'de düz metin saklanmaz)"""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+def get_user_id_from_email(email):
+    """Email'den benzersiz user_id oluştur (email saklanmaz cookie'de)"""
+    return hashlib.sha256(email.lower().encode()).hexdigest()[:16]
+
+def load_persistent_logins():
+    """Persistent login kayıtlarını cookie'den yükle (artık Azure kullanmıyor)"""
     try:
-        remembered_data = {
-            "email": email,
-            "password": password,  # Şifre plain text olarak (çünkü direkt giriş için gerekli)
-            "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
-        json_data = json.dumps(remembered_data, ensure_ascii=False, indent=2)
-        
-        # Azure Blob Storage'a kaydet
-        if blob_storage and blob_storage.blob_service_client:
-            success = blob_storage.upload_file(file_name=REMEMBER_ME_FILE, data=json_data.encode('utf-8'))
-            if success:
-                return True
+        if COOKIES_AVAILABLE and cookies is not None and cookies.ready():
+            logins_json = cookies.get("persistent_logins", "")
+            if logins_json:
+                import base64
+                decoded = base64.b64decode(logins_json.encode()).decode('utf-8')
+                return json.loads(decoded)
     except Exception as e:
-        pass  # Hata olsa bile sessizce devam et
+        print(f"[REMEMBER ME] Load hatası: {e}")
+    return {}
+
+def save_persistent_logins(logins):
+    """Persistent login kayıtlarını cookie'ye hazırla (save ayrı yapılacak)"""
+    try:
+        if COOKIES_AVAILABLE and cookies is not None and cookies.ready():
+            import base64
+            json_data = json.dumps(logins, ensure_ascii=False)
+            encoded = base64.b64encode(json_data.encode('utf-8')).decode()
+            cookies["persistent_logins"] = encoded
+            # NOT: cookies.save() burada çağrılmıyor - çağıran kod tek seferde save yapacak
+            return True
+    except Exception as e:
+        print(f"[REMEMBER ME] Save hatası: {e}")
+    return False
+
+def create_remember_me_token(email, ip_address="", user_agent=""):
+    """
+    Yeni remember me token oluştur ve veritabanına kaydet
+    
+    Returns:
+        str: base64 encoded cookie value (userId:seriesId:token)
+        None: Hata durumunda
+    """
+    try:
+        user_id = get_user_id_from_email(email)
+        series_id = generate_series_id()
+        token = generate_secure_token()
+        token_hash = hash_token(token)
+        
+        # Yeni kayıt oluştur
+        new_login = {
+            "series_id": series_id,
+            "token_hash": token_hash,
+            "expires_at": (datetime.now() + timedelta(days=30)).isoformat(),
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat(),
+            "ip_address": ip_address,
+            "user_agent": user_agent,
+            "email": email
+        }
+        
+        # Cookie değerini oluştur (base64 encoded)
+        import base64
+        cookie_value = f"{user_id}:{series_id}:{token}"
+        encoded_cookie = base64.b64encode(cookie_value.encode()).decode()
+        
+        # Login bilgisini session_state'e kaydet (cookie save login sırasında yapılacak)
+        st.session_state['pending_login_data'] = {
+            'user_id': user_id,
+            'login_entry': new_login
+        }
+        
+        return encoded_cookie
+        
+    except Exception as e:
+        print(f"[REMEMBER ME] Token oluşturma hatası: {e}")
+        return None
+
+def validate_and_rotate_token(cookie_value, ip_address="", user_agent=""):
+    """
+    Cookie'den gelen token'ı doğrula ve rotate et
+    
+    Returns:
+        tuple: (success: bool, email: str or None, new_cookie: str or None, warning: str or None)
+    """
+    try:
+        import base64
+        
+        # Cookie'yi decode et
+        decoded = base64.b64decode(cookie_value.encode()).decode()
+        parts = decoded.split(":")
+        
+        if len(parts) != 3:
+            return False, None, None, "Geçersiz cookie formatı"
+        
+        user_id, series_id, token = parts
+        token_hash = hash_token(token)
+        
+        # Cookie'den logins yükle
+        logins = load_persistent_logins()
+        
+        if user_id not in logins:
+            return False, None, None, "Kullanıcı bulunamadı"
+        
+        # Series ID ile eşleşen kaydı bul
+        matching_login = None
+        for login in logins[user_id]:
+            if login.get('series_id') == series_id:
+                matching_login = login
+                break
+        
+        if not matching_login:
+            return False, None, None, "Oturum bulunamadı"
+        
+        # Token hash kontrolü
+        if matching_login.get('token_hash') != token_hash:
+            # ⚠️ TOKEN ÇALINMIŞ OLABİLİR!
+            # Series ID doğru ama token yanlış = çalıntı token kullanımı
+            logins[user_id] = []
+            save_persistent_logins(logins)
+            return False, None, None, "⚠️ Güvenlik uyarısı: Şüpheli aktivite tespit edildi. Lütfen tekrar giriş yapın."
+        
+        # Süre kontrolü
+        expires_at = datetime.fromisoformat(matching_login.get('expires_at', '2000-01-01'))
+        if datetime.now() > expires_at:
+            logins[user_id] = [l for l in logins[user_id] if l.get('series_id') != series_id]
+            save_persistent_logins(logins)
+            return False, None, None, "Oturum süresi dolmuş"
+        
+        # IP veya User-Agent değişimi kontrolü (opsiyonel uyarı)
+        warning = None
+        if matching_login.get('ip_address') and matching_login.get('ip_address') != ip_address:
+            warning = "IP adresi değişmiş"
+        
+        # ✅ Token geçerli - ROTATION yap
+        email = matching_login.get('email', '')
+        
+        # Yeni token üret
+        new_token = generate_secure_token()
+        new_token_hash = hash_token(new_token)
+        
+        # Kaydı güncelle
+        for login in logins[user_id]:
+            if login.get('series_id') == series_id:
+                login['token_hash'] = new_token_hash
+                login['updated_at'] = datetime.now().isoformat()
+                login['ip_address'] = ip_address
+                login['user_agent'] = user_agent
+                break
+        
+        save_persistent_logins(logins)
+        
+        # Yeni cookie değeri
+        new_cookie_value = f"{user_id}:{series_id}:{new_token}"
+        new_encoded_cookie = base64.b64encode(new_cookie_value.encode()).decode()
+        
+        return True, email, new_encoded_cookie, warning
+        
+    except Exception as e:
+        print(f"[REMEMBER ME] Token doğrulama hatası: {e}")
+        return False, None, None, str(e)
+
+def revoke_remember_me_token(email=None, user_id=None, series_id=None):
+    """
+    Remember me token'ını iptal et
+    
+    Args:
+        email: Kullanıcı email'i (tüm tokenları siler)
+        user_id: User ID (tüm tokenları siler)
+        series_id: Belirli bir series (sadece o token'ı siler)
+    """
+    try:
+        logins = load_persistent_logins()
+        
+        if email:
+            user_id = get_user_id_from_email(email)
+        
+        if user_id:
+            if series_id:
+                # Sadece belirli series'i sil
+                if user_id in logins:
+                    logins[user_id] = [l for l in logins[user_id] if l.get('series_id') != series_id]
+            else:
+                # Tüm tokenları sil
+                logins[user_id] = []
+            
+            save_persistent_logins(logins)
+            return True
+            
+    except Exception as e:
+        print(f"[REMEMBER ME] Token iptal hatası: {e}")
     
     return False
 
-def load_remembered_credentials():
-    """Kaydedilen email ve şifreyi hatırla JSON dosyasından yükle"""
+def cleanup_expired_tokens():
+    """Süresi dolmuş tüm tokenları temizle (bakım fonksiyonu)"""
     try:
-        # Azure Blob Storage'dan yükle
-        if blob_storage and blob_storage.blob_service_client:
-            blob_data = blob_storage.download_file(REMEMBER_ME_FILE)
-            if blob_data:
-                try:
-                    remembered_data = json.loads(blob_data.decode('utf-8'))
-                    return remembered_data.get("email", ""), remembered_data.get("password", "")
-                except Exception:
-                    pass
+        logins = load_persistent_logins()
+        now = datetime.now()
+        
+        for user_id in logins:
+            logins[user_id] = [
+                login for login in logins[user_id]
+                if datetime.fromisoformat(login.get('expires_at', '2000-01-01')) > now
+            ]
+        
+        save_persistent_logins(logins)
+        return True
     except Exception:
-        pass
-    
-    return "", ""
+        return False
 
-def clear_remembered_credentials():
-    """Kaydedilen email ve şifreyi sil"""
+def get_client_info():
+    """İstemci IP ve User-Agent bilgilerini al"""
     try:
-        if blob_storage and blob_storage.blob_service_client:
-            # Blob Storage'da dosya silme işlemi
-            # Not: Şu anda blob_storage sınıfında delete_file metodu yok olabilir
-            # Alternatif olarak boş veri gönderelim
-            blob_storage.upload_file(file_name=REMEMBER_ME_FILE, data=b"{}")
+        # Streamlit'te bu bilgilere doğrudan erişim sınırlı
+        # Gerçek bir production ortamında reverse proxy header'larından alınır
+        ip_address = "unknown"
+        user_agent = "unknown"
+        
+        # Streamlit session'dan deneyebiliriz
+        if hasattr(st, 'context'):
+            # Streamlit 1.31+ için
+            pass
+        
+        return ip_address, user_agent
+    except Exception:
+        return "unknown", "unknown"
+
+# Eski fonksiyonları güncelle (uyumluluk için)
+def save_remembered_credentials(email, password):
+    """
+    Remember Me token oluştur (ŞİFRE SAKLANMAZ!)
+    Gerçek implementasyon JavaScript tarafında cookie ile yapılır
+    """
+    try:
+        ip_address, user_agent = get_client_info()
+        cookie_value = create_remember_me_token(email, ip_address, user_agent)
+        
+        if cookie_value:
+            # Session state'e sadece geçici olarak sakla (JS'e iletmek için)
+            st.session_state['remember_me_cookie'] = cookie_value
+            st.session_state['remembered_email'] = email
             return True
     except Exception:
         pass
-    
+    return False
+
+def load_remembered_credentials():
+    """Session state'den email yükle (şifre SAKLANMAZ)"""
+    try:
+        email = st.session_state.get('remembered_email', '')
+        # Şifre artık saklanmıyor, boş döner
+        return email, ""
+    except Exception:
+        pass
+    return "", ""
+
+def clear_remembered_credentials():
+    """Remember me token'ını iptal et ve session'ı temizle"""
+    try:
+        email = st.session_state.get('remembered_email', '')
+        if email:
+            revoke_remember_me_token(email=email)
+        
+        # Session state'den temizle
+        for key in ['remembered_email', 'remember_me_cookie']:
+            if key in st.session_state:
+                st.session_state.pop(key)
+        
+        return True
+    except Exception:
+        pass
     return False
 
 # Kullanıcı veritabanını yükle
@@ -5962,7 +6223,19 @@ def show_subscription_expired_page():
     col_logout1, col_logout2 = st.columns(2)
     with col_logout1:
         if st.button("🚪 Çıkış Yap", type="primary", use_container_width=True):
-            # Çıkış sırasında "Beni Hatırla" verilerini temizle
+            # 🔐 GÜVENLİ ÇIKIŞ: Token'ı iptal et
+            user_email = st.session_state.get('user_email', '')
+            if user_email:
+                user_id = get_user_id_from_email(user_email)
+                revoke_remember_me_token(user_email, user_id, series_id=None)
+            
+            # Cookie'leri temizle
+            if COOKIES_AVAILABLE and cookies is not None:
+                cookies["remember_token"] = ""
+                cookies["remembered_email"] = ""
+                cookies["persistent_logins"] = ""
+                cookies.save()
+            
             clear_remembered_credentials()
             for key in ['logged_in', 'user_email', 'user_name']:
                 if key in st.session_state:
@@ -5970,8 +6243,23 @@ def show_subscription_expired_page():
             st.rerun()
     with col_logout2:
         if st.button("🔐 Beni Hatırlamayı Sil", use_container_width=True):
+            # 🔐 GÜVENLİ: Token'ları iptal et
+            user_email = st.session_state.get('user_email', '')
+            if user_email:
+                user_id = get_user_id_from_email(user_email)
+                revoke_remember_me_token(user_email, user_id, series_id=None)  # Tüm token'ları sil
+            
             clear_remembered_credentials()
-            st.success("✅ Kaydedilen bilgiler silindi!")
+            # Cookie manager ile sil
+            if COOKIES_AVAILABLE and cookies is not None:
+                try:
+                    cookies["remember_token"] = ""
+                    cookies["remembered_email"] = ""
+                    cookies["persistent_logins"] = ""
+                    cookies.save()
+                except Exception as e:
+                    st.warning(f"Cookie temizleme hatası: {e}")
+            st.success("✅ Kaydedilen bilgiler ve tüm oturum token'ları silindi!")
             st.info("Bir sonraki girişte login bilgilerini tekrar girmeniz gerekecek.")
 
 # ================ ADMİN PANELİ ================
@@ -6347,11 +6635,61 @@ def show_login_page():
     
     # Seçilen tab'a göre içerik göster
     if selected_tab == "🔑 Giriş Yap":
-        # Kaydedilen bilgileri yükle (ilk defa)
+        # 🔐 Cookie Manager ile Remember Me
+        if COOKIES_AVAILABLE and cookies is not None:
+            if not cookies.ready():
+                st.stop()  # Cookie manager hazır olana kadar bekle
+            
+            # Cookie'den token kontrol et
+            remember_token = cookies.get("remember_token")
+            
+            if remember_token and not st.session_state.get('logged_in', False):
+                # Token'ı doğrula
+                ip_address, user_agent = get_client_info()
+                success, email, new_token, warning = validate_and_rotate_token(remember_token, ip_address, user_agent)
+                
+                if success and email:
+                    # Otomatik giriş yap
+                    st.session_state['logged_in'] = True
+                    st.session_state['user_email'] = email
+                    st.session_state['remembered_email'] = email
+                    
+                    # Yeni token'ı kaydet (rotation) - tek save
+                    if new_token:
+                        cookies["remember_token"] = new_token
+                        cookies["remembered_email"] = email
+                        # persistent_logins zaten validate_and_rotate_token içinde güncellendi
+                        cookies.save()
+                    
+                    if warning:
+                        st.warning(f"⚠️ {warning}")
+                    
+                    # User name ayarla
+                    if email == "erdalural@gmail.com":
+                        st.session_state['user_name'] = "Erdal Ural (Test Kullanıcısı)"
+                    else:
+                        users = load_users()
+                        if email in users:
+                            st.session_state['user_name'] = users[email].get('name', email)
+                    
+                    st.success("✅ Otomatik giriş başarılı!")
+                    st.rerun()
+                else:
+                    # Token geçersiz - sadece değerleri sıfırla, save yapma (bir sonraki login'de yapılacak)
+                    cookies["remember_token"] = ""
+                    cookies["remembered_email"] = ""
+                    cookies["persistent_logins"] = ""
+                    # NOT: Burada save yapmıyoruz - duplicate key hatası önlemek için
+                    # Değerler memory'de sıfırlanır, kullanıcı tekrar giriş yapınca save edilir
+                    if warning:
+                        st.info(f"ℹ️ {warning}")
+        
+        # Kaydedilen email'i yükle
         if 'remembered_email' not in st.session_state:
-            remembered_email, remembered_password = load_remembered_credentials()
-            st.session_state['remembered_email'] = remembered_email
-            st.session_state['remembered_password'] = remembered_password
+            if COOKIES_AVAILABLE and cookies is not None:
+                st.session_state['remembered_email'] = cookies.get("remembered_email", "")
+            else:
+                st.session_state['remembered_email'] = ""
         
         # Ana layout: Sol taraf giriş formu, sağ taraf abonelik bilgileri
         main_left, main_right = st.columns([1, 1])
@@ -6374,7 +6712,8 @@ def show_login_page():
             # Form - nested columns kaldırıldı (Azure uyumluluğu için)
             with st.form("login_form"):
                 email = st.text_input("📧 Email:", value=st.session_state.get('remembered_email', ''), key="login_email")
-                password = st.text_input("🔒 Şifre:", type="password", value=st.session_state.get('remembered_password', ''), key="login_password")
+                # 🔐 ŞİFRE ASLA SAKLANMAZ - Güvenlik için her seferinde girilmeli
+                password = st.text_input("🔒 Şifre:", type="password", key="login_password")
                 remember_me = st.checkbox("Beni Hatırla", value=st.session_state.get('login_remember_me', False), key="login_remember_me")
 
                 # Butonlar alt alta (nested columns Azure'da desteklenmiyor)
@@ -6387,17 +6726,53 @@ def show_login_page():
                         st.session_state['logged_in'] = True
                         st.session_state['user_email'] = email
                         
-                        # Eğer "Beni Hatırla" seçiliyse, bilgileri kaydet
+                        # 🔐 GÜVENLİ REMEMBER ME - Cookie Manager ile
                         if st.session_state.get('login_remember_me', False):
-                            save_remembered_credentials(email, password)
+                            # Güvenli token oluştur (şifre ASLA saklanmaz!)
+                            ip_address, user_agent = get_client_info()
+                            cookie_value = create_remember_me_token(email, ip_address, user_agent)
+                            
+                            if cookie_value and COOKIES_AVAILABLE and cookies is not None:
+                                # Pending login data'yı cookie'ye kaydet
+                                pending = st.session_state.get('pending_login_data')
+                                if pending:
+                                    import base64
+                                    user_id = pending['user_id']
+                                    login_entry = pending['login_entry']
+                                    
+                                    # Mevcut logins'i yükle veya boş dict
+                                    logins_json = cookies.get("persistent_logins", "")
+                                    if logins_json:
+                                        try:
+                                            logins = json.loads(base64.b64decode(logins_json.encode()).decode('utf-8'))
+                                        except:
+                                            logins = {}
+                                    else:
+                                        logins = {}
+                                    
+                                    # User için liste yoksa oluştur ve yeni kaydı ekle
+                                    if user_id not in logins:
+                                        logins[user_id] = []
+                                    logins[user_id] = [login_entry]  # Tek kayıt tut (eski kayıtları sil)
+                                    
+                                    # Her şeyi tek seferde kaydet
+                                    encoded_logins = base64.b64encode(json.dumps(logins).encode('utf-8')).decode()
+                                    cookies["persistent_logins"] = encoded_logins
+                                    cookies["remember_token"] = cookie_value
+                                    cookies["remembered_email"] = email
+                                    cookies.save()
+                                    
+                                    del st.session_state['pending_login_data']
+                                
+                                st.success("✅ Beni Hatırla aktif!")
+                                save_remembered_credentials(email, "")
                         else:
-                            # Seçili değilse, kaydedilen bilgileri sil
-                            clear_remembered_credentials()
-                        # Beni Hatırla - Checkbox'ı işaretliyse, credentials'ı kaydet
-                        if st.session_state.get('login_remember_me', False):
-                            save_remembered_credentials(email, password)
-                        else:
-                            # Checkbox işaretli değilse, kaydedilen credentials'ı sil
+                            # Seçili değilse, cookie'leri sil
+                            if COOKIES_AVAILABLE and cookies is not None:
+                                cookies["remember_token"] = ""
+                                cookies["remembered_email"] = ""
+                                cookies["persistent_logins"] = ""
+                                cookies.save()
                             clear_remembered_credentials()
                         
                         # Kullanıcı değiştiğinde önceki portföy önbelleğini ve ilgili state'leri temizle
@@ -7685,8 +8060,23 @@ def show_main_app():
     
     with col3:
         if st.button("🚪 Çıkış Yap", type="secondary"):
+            # 🔐 GÜVENLİ ÇIKIŞ: Token'ı iptal et
+            user_email = st.session_state.get('user_email', '')
+            if user_email:
+                user_id = get_user_id_from_email(user_email)
+                revoke_remember_me_token(user_email, user_id, series_id=None)  # Tüm token'ları sil
+            
             # Çıkış sırasında "Beni Hatırla" verilerini temizle
             clear_remembered_credentials()
+            # Cookie manager ile sil
+            if COOKIES_AVAILABLE and cookies is not None:
+                try:
+                    cookies["remember_token"] = ""
+                    cookies["remembered_email"] = ""
+                    cookies["persistent_logins"] = ""
+                    cookies.save()
+                except Exception as e:
+                    pass  # Çıkış sırasında hata gösterme
             # Oturum ve kullanıcı bilgilerini temizle
             for key in ['logged_in', 'user_email', 'user_name']:
                 if key in st.session_state:
