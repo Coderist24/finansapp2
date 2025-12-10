@@ -507,7 +507,9 @@ def get_cookie_manager():
 cookie_manager = get_cookie_manager()
 
 # ✅ Ortak cookie ayarları (Azure üretimde Secure + domain/samesite)
-COOKIE_DOMAIN = os.environ.get("COOKIE_DOMAIN") or None
+# CRITICAL: Domain NONE olmalı - Azure Web App kendi domain'inde çalışsın
+# Eğer parambende.com custom domain varsa, sadece o zaman set et
+COOKIE_DOMAIN = None  # Azure için None gerekli (finansapp2-xxx.azurewebsites.net ile çalışsın)
 _cookie_samesite_raw = os.environ.get("COOKIE_SAMESITE", "lax").strip().lower()
 if _cookie_samesite_raw == "none":
     COOKIE_SAMESITE = None
