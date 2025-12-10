@@ -508,8 +508,7 @@ cookie_manager = get_cookie_manager()
 
 # ✅ Ortak cookie ayarları (Azure üretimde Secure + domain/samesite)
 # CRITICAL: Domain NONE olmalı - Azure Web App kendi domain'inde çalışsın
-# Eğer parambende.com custom domain varsa, sadece o zaman set et
-COOKIE_DOMAIN = None  # Azure için None gerekli (finansapp2-xxx.azurewebsites.net ile çalışsın)
+COOKIE_DOMAIN = None  # Domain set etmeden bırak - browser mevcut domain kullanır
 _cookie_samesite_raw = os.environ.get("COOKIE_SAMESITE", "lax").strip().lower()
 if _cookie_samesite_raw == "none":
     COOKIE_SAMESITE = None
@@ -533,18 +532,21 @@ print(f"[COOKIE_CONFIG_DEBUG] ===========================================")
 
 def set_remember_cookie(name, value, expires_at, key):
     """Tek noktadan cookie yaz; domain/secure/samesite tutarlı olsun."""
+    import time
     try:
+        # Unique key oluştur - timestamp ekle
+        unique_key = f"{key}_{int(time.time() * 1000)}"
+        
         debug_info = {
             "cookie_name": name,
             "value_length": len(str(value)) if value else 0,
             "expires_at": str(expires_at),
-            "key": key,
+            "key": unique_key,
             "domain": COOKIE_DOMAIN,
             "secure": COOKIE_SECURE,
             "samesite": COOKIE_SAMESITE,
             "cookies_available": COOKIES_AVAILABLE,
             "cookie_manager_exists": cookie_manager is not None,
-            "website_hostname": os.environ.get("WEBSITE_HOSTNAME", "NOT_SET"),
         }
         print(f"[COOKIE_SET_DEBUG] Attempting to set cookie: {json.dumps(debug_info, indent=2)}")
         
@@ -553,13 +555,13 @@ def set_remember_cookie(name, value, expires_at, key):
                 name,
                 value,
                 expires_at=expires_at,
-                key=key,
+                key=unique_key,
                 path="/",
                 domain=COOKIE_DOMAIN,
                 secure=COOKIE_SECURE,
                 same_site=COOKIE_SAMESITE,
             )
-            print(f"[COOKIE_SET_DEBUG] ✅ Cookie set successfully: {name}")
+            print(f"[COOKIE_SET_DEBUG] ✅ Cookie set successfully: {name} (key={unique_key})")
         else:
             print(f"[COOKIE_SET_DEBUG] ❌ Cannot set cookie - COOKIES_AVAILABLE={COOKIES_AVAILABLE}, cookie_manager={cookie_manager is not None}")
     except Exception as e:
