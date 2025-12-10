@@ -519,19 +519,51 @@ else:
 # Azure App Service ortamında WEBSITE_HOSTNAME mevcut → Secure flag gereksinimi
 COOKIE_SECURE = bool(os.environ.get("WEBSITE_HOSTNAME"))
 
+# Debug: Cookie ayarlarını logla
+print("[COOKIE_CONFIG_DEBUG] ===========================================")
+print(f"[COOKIE_CONFIG_DEBUG] Cookie Configuration:")
+print(f"[COOKIE_CONFIG_DEBUG]   COOKIE_DOMAIN: {COOKIE_DOMAIN}")
+print(f"[COOKIE_CONFIG_DEBUG]   COOKIE_SAMESITE: {COOKIE_SAMESITE}")
+print(f"[COOKIE_CONFIG_DEBUG]   COOKIE_SECURE: {COOKIE_SECURE}")
+print(f"[COOKIE_CONFIG_DEBUG]   COOKIES_AVAILABLE: {COOKIES_AVAILABLE}")
+print(f"[COOKIE_CONFIG_DEBUG]   WEBSITE_HOSTNAME: {os.environ.get('WEBSITE_HOSTNAME', 'NOT_SET')}")
+print(f"[COOKIE_CONFIG_DEBUG] ===========================================")
+
 def set_remember_cookie(name, value, expires_at, key):
     """Tek noktadan cookie yaz; domain/secure/samesite tutarlı olsun."""
-    if COOKIES_AVAILABLE and cookie_manager is not None:
-        cookie_manager.set(
-            name,
-            value,
-            expires_at=expires_at,
-            key=key,
-            path="/",
-            domain=COOKIE_DOMAIN,
-            secure=COOKIE_SECURE,
-            same_site=COOKIE_SAMESITE,
-        )
+    try:
+        debug_info = {
+            "cookie_name": name,
+            "value_length": len(str(value)) if value else 0,
+            "expires_at": str(expires_at),
+            "key": key,
+            "domain": COOKIE_DOMAIN,
+            "secure": COOKIE_SECURE,
+            "samesite": COOKIE_SAMESITE,
+            "cookies_available": COOKIES_AVAILABLE,
+            "cookie_manager_exists": cookie_manager is not None,
+            "website_hostname": os.environ.get("WEBSITE_HOSTNAME", "NOT_SET"),
+        }
+        print(f"[COOKIE_SET_DEBUG] Attempting to set cookie: {json.dumps(debug_info, indent=2)}")
+        
+        if COOKIES_AVAILABLE and cookie_manager is not None:
+            cookie_manager.set(
+                name,
+                value,
+                expires_at=expires_at,
+                key=key,
+                path="/",
+                domain=COOKIE_DOMAIN,
+                secure=COOKIE_SECURE,
+                same_site=COOKIE_SAMESITE,
+            )
+            print(f"[COOKIE_SET_DEBUG] ✅ Cookie set successfully: {name}")
+        else:
+            print(f"[COOKIE_SET_DEBUG] ❌ Cannot set cookie - COOKIES_AVAILABLE={COOKIES_AVAILABLE}, cookie_manager={cookie_manager is not None}")
+    except Exception as e:
+        print(f"[COOKIE_SET_DEBUG] ❌ Exception setting cookie {name}: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 
 def inject_dark_theme():
@@ -2287,14 +2319,24 @@ def get_user_id_from_email(email):
 def load_persistent_logins():
     """Persistent login kayıtlarını cookie'den yükle"""
     try:
+        print(f"[COOKIE_GET_DEBUG] Loading persistent logins - COOKIES_AVAILABLE={COOKIES_AVAILABLE}, cookie_manager={cookie_manager is not None}")
         if COOKIES_AVAILABLE and cookie_manager is not None:
             logins_json = cookie_manager.get("finapp_persistent_logins")
+            print(f"[COOKIE_GET_DEBUG] Retrieved cookie value: {logins_json[:100] if logins_json else 'NONE'}...")
             if logins_json:
                 import base64
                 decoded = base64.b64decode(logins_json.encode()).decode('utf-8')
-                return json.loads(decoded)
+                result = json.loads(decoded)
+                print(f"[COOKIE_GET_DEBUG] ✅ Successfully loaded {len(result)} user(s) from cookie")
+                return result
+            else:
+                print(f"[COOKIE_GET_DEBUG] ⚠️ Cookie is empty or not found")
+        else:
+            print(f"[COOKIE_GET_DEBUG] ❌ Cookie manager not available")
     except Exception as e:
         print(f"[REMEMBER ME] Load hatası: {e}")
+        import traceback
+        traceback.print_exc()
     return {}
 
 def save_persistent_logins(logins):
@@ -6679,14 +6721,19 @@ def show_login_page():
                     pass
         elif COOKIES_AVAILABLE and cookie_manager is not None:
             # Cookie'den token kontrol et
+            print("[AUTO_LOGIN_DEBUG] 🔍 Checking for remember-me token...")
             remember_token = cookie_manager.get("finapp_remember_token")
+            print(f"[AUTO_LOGIN_DEBUG] Token exists: {bool(remember_token)}, Token length: {len(remember_token) if remember_token else 0}")
             
             if remember_token and not st.session_state.get('logged_in', False):
+                print("[AUTO_LOGIN_DEBUG] 🔐 Attempting auto-login with token...")
                 # Token'ı doğrula
                 ip_address, user_agent = get_client_info()
                 success, email, new_token, warning = validate_and_rotate_token(remember_token, ip_address, user_agent)
+                print(f"[AUTO_LOGIN_DEBUG] Validation result - success={success}, email={email}, has_new_token={bool(new_token)}, warning={warning}")
                 
                 if success and email:
+                    print(f"[AUTO_LOGIN_DEBUG] ✅ Auto-login successful for {email}")
                     # Otomatik giriş yap
                     st.session_state['logged_in'] = True
                     st.session_state['user_email'] = email
@@ -6694,6 +6741,7 @@ def show_login_page():
                     
                     # Yeni token'ı kaydet (rotation)
                     if new_token:
+                        print("[AUTO_LOGIN_DEBUG] 🔄 Rotating token...")
                         set_remember_cookie(
                             "finapp_remember_token",
                             new_token,
@@ -6721,6 +6769,7 @@ def show_login_page():
                     st.success("✅ Otomatik giriş başarılı!")
                     st.rerun()
                 else:
+                    print(f"[AUTO_LOGIN_DEBUG] ❌ Auto-login failed - success={success}, email={email}")
                     # Token geçersiz - session state'den temizle
                     st.session_state['remembered_email'] = ""
         
@@ -6763,16 +6812,21 @@ def show_login_page():
             if login_submitted:
                 if email and password:
                     if authenticate_user(email, password):
+                        print(f"[LOGIN_DEBUG] ✅ Authentication successful for {email}")
                         st.session_state['logged_in'] = True
                         st.session_state['user_email'] = email
                         
                         # 🔐 GÜVENLİ REMEMBER ME - Cookie Manager ile
                         if st.session_state.get('login_remember_me', False):
+                            print("[LOGIN_DEBUG] 🔐 Remember Me checkbox is CHECKED, creating token...")
                             # Güvenli token oluştur (şifre ASLA saklanmaz!)
                             ip_address, user_agent = get_client_info()
+                            print(f"[LOGIN_DEBUG] Client info - IP: {ip_address}, UA: {user_agent[:50]}...")
                             cookie_value = create_remember_me_token(email, ip_address, user_agent)
+                            print(f"[LOGIN_DEBUG] Token created: {bool(cookie_value)}, length: {len(cookie_value) if cookie_value else 0}")
                             
                             if cookie_value and COOKIES_AVAILABLE and cookie_manager is not None:
+                                print("[LOGIN_DEBUG] 💾 Saving remember-me cookies...")
                                 # Pending login data'yı cookie'ye kaydet
                                 pending = st.session_state.get('pending_login_data')
                                 if pending:
@@ -6819,9 +6873,11 @@ def show_login_page():
                                     
                                     del st.session_state['pending_login_data']
                                 
+                                print("[LOGIN_DEBUG] ✅ All remember-me cookies saved successfully")
                                 st.success("✅ Beni Hatırla aktif!")
                                 save_remembered_credentials(email, "")
                         else:
+                            print("[LOGIN_DEBUG] ⚠️ Remember Me checkbox is UNCHECKED, deleting cookies...")
                             # Seçili değilse, cookie'leri sil
                             if COOKIES_AVAILABLE and cookie_manager is not None:
                                 cookie_manager.delete("finapp_remember_token", key="del_token_3")
