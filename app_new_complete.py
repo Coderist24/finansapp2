@@ -506,6 +506,33 @@ def get_cookie_manager():
 
 cookie_manager = get_cookie_manager()
 
+# ✅ Ortak cookie ayarları (Azure üretimde Secure + domain/samesite)
+COOKIE_DOMAIN = os.environ.get("COOKIE_DOMAIN") or None
+_cookie_samesite_raw = os.environ.get("COOKIE_SAMESITE", "lax").strip().lower()
+if _cookie_samesite_raw == "none":
+    COOKIE_SAMESITE = None
+elif _cookie_samesite_raw in ("lax", "strict"):
+    COOKIE_SAMESITE = _cookie_samesite_raw
+else:
+    COOKIE_SAMESITE = "lax"
+
+# Azure App Service ortamında WEBSITE_HOSTNAME mevcut → Secure flag gereksinimi
+COOKIE_SECURE = bool(os.environ.get("WEBSITE_HOSTNAME"))
+
+def set_remember_cookie(name, value, expires_at, key):
+    """Tek noktadan cookie yaz; domain/secure/samesite tutarlı olsun."""
+    if COOKIES_AVAILABLE and cookie_manager is not None:
+        cookie_manager.set(
+            name,
+            value,
+            expires_at=expires_at,
+            key=key,
+            path="/",
+            domain=COOKIE_DOMAIN,
+            secure=COOKIE_SECURE,
+            same_site=COOKIE_SAMESITE,
+        )
+
 
 def inject_dark_theme():
     """Apply the global dark-finance theme across the app UI."""
@@ -2277,7 +2304,12 @@ def save_persistent_logins(logins):
             import base64
             json_data = json.dumps(logins, ensure_ascii=False)
             encoded = base64.b64encode(json_data.encode('utf-8')).decode()
-            cookie_manager.set("finapp_persistent_logins", encoded, expires_at=datetime.now() + timedelta(days=30), key="set_logins_save")
+            set_remember_cookie(
+                "finapp_persistent_logins",
+                encoded,
+                datetime.now() + timedelta(days=30),
+                "set_logins_save",
+            )
             return True
     except Exception as e:
         print(f"[REMEMBER ME] Save hatası: {e}")
@@ -6662,8 +6694,18 @@ def show_login_page():
                     
                     # Yeni token'ı kaydet (rotation)
                     if new_token:
-                        cookie_manager.set("finapp_remember_token", new_token, expires_at=datetime.now() + timedelta(days=30), key="set_token_rotate")
-                        cookie_manager.set("finapp_remembered_email", email, expires_at=datetime.now() + timedelta(days=30), key="set_email_rotate")
+                        set_remember_cookie(
+                            "finapp_remember_token",
+                            new_token,
+                            datetime.now() + timedelta(days=30),
+                            "set_token_rotate",
+                        )
+                        set_remember_cookie(
+                            "finapp_remembered_email",
+                            email,
+                            datetime.now() + timedelta(days=30),
+                            "set_email_rotate",
+                        )
                     
                     if warning:
                         st.warning(f"⚠️ {warning}")
@@ -6756,9 +6798,24 @@ def show_login_page():
                                     # Cookie'lere kaydet (extra-streamlit-components API)
                                     encoded_logins = base64.b64encode(json.dumps(logins).encode('utf-8')).decode()
                                     expires = datetime.now() + timedelta(days=30)
-                                    cookie_manager.set("finapp_persistent_logins", encoded_logins, expires_at=expires, key="set_logins_login")
-                                    cookie_manager.set("finapp_remember_token", cookie_value, expires_at=expires, key="set_token_login")
-                                    cookie_manager.set("finapp_remembered_email", email, expires_at=expires, key="set_email_login")
+                                    set_remember_cookie(
+                                        "finapp_persistent_logins",
+                                        encoded_logins,
+                                        expires,
+                                        "set_logins_login",
+                                    )
+                                    set_remember_cookie(
+                                        "finapp_remember_token",
+                                        cookie_value,
+                                        expires,
+                                        "set_token_login",
+                                    )
+                                    set_remember_cookie(
+                                        "finapp_remembered_email",
+                                        email,
+                                        expires,
+                                        "set_email_login",
+                                    )
                                     
                                     del st.session_state['pending_login_data']
                                 
